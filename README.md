@@ -85,14 +85,20 @@ pixi run pyramid-prune --cache-root /path/to/cache --source-root /path/to/tomogr
 pixi run serve
 ```
 
-Starts uvicorn on `0.0.0.0:8000`, reading `MRCNG_SOURCE_ROOT` /
-`MRCNG_CACHE_ROOT` (and the other `MRCNG_*` settings) from the environment.
+Starts uvicorn on `0.0.0.0:8000` over HTTPS, using the shared cert at
+`/opt/certs/{cert.crt,cert.key}` — Neuroglancer runs in-browser and won't load
+a plain-HTTP data source from a page served over HTTPS (mixed content), so TLS
+here isn't optional. Reads `MRCNG_SOURCE_ROOT` / `MRCNG_CACHE_ROOT` (and the
+other `MRCNG_*` settings) from the environment.
 
 Check it's up:
 
 ```bash
-curl http://localhost:8000/healthz
+curl -k https://localhost:8000/healthz
 ```
+
+(`-k` because the shared cert isn't necessarily issued for `localhost`; check
+from the real hostname to validate normally.)
 
 ## Tests
 
@@ -105,7 +111,7 @@ pixi run test
 Once the server is running:
 
 ```bash
-pixi run benchmark --base-url http://localhost:8000 \
+pixi run benchmark --base-url https://localhost:8000 \
     --relpath some/relative/path.mrc --concurrency 8 --requests-per-dataset 20
 ```
 
@@ -115,12 +121,12 @@ before you have a number to compare against.
 
 ## Loading data into Neuroglancer
 
-1. Start the server (above) and note its base URL, e.g. `http://localhost:8000`.
+1. Start the server (above) and note its base URL, e.g. `https://your-host:8000`.
 2. For a file at `<MRCNG_SOURCE_ROOT>/some/relative/path.mrc`, the
    Neuroglancer data source URL is:
 
    ```
-   precomputed://http://localhost:8000/data/some/relative/path.mrc
+   precomputed://https://your-host:8000/data/some/relative/path.mrc
    ```
 
    (no `/info` suffix — Neuroglancer appends that itself).

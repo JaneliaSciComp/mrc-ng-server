@@ -35,6 +35,6 @@ default = { features = ["test"], solve-group = "default" }
 build-cache = "mrc-pyramid build"
 pyramid-status = "mrc-pyramid status"
 pyramid-prune = "mrc-pyramid prune"
-serve = "uvicorn mrcng.server.app:get_app --factory --host 0.0.0.0 --port 8000"
+serve = "uvicorn mrcng.server.app:get_app --factory --host 0.0.0.0 --port 8000 --ssl-keyfile /opt/certs/cert.key --ssl-certfile /opt/certs/cert.crt"
 test = "pytest"
 benchmark = "python -m mrcng.benchmark"

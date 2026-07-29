@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -39,6 +40,37 @@ def test_info_has_all_scales_when_cache_valid(cached_setup):
     assert resp.status_code == 200
     scales = resp.json()["scales"]
     assert len(scales) > 1
+
+
+def test_cached_info_is_rebuilt_from_the_header_not_served_from_disk(cached_setup):
+    # Regression: info was served as the verbatim bytes of cache_dir/"info".
+    # The fingerprint compares chunk addressing and source identity only and
+    # ignores generator_version, so a header-derivation fix never invalidated
+    # an existing cache -- a zero-cella-z tilt stack kept advertising
+    # "resolution": [.., .., 0.0] (rejected outright by Neuroglancer) for as
+    # long as its stale info file sat in the cache. Poisoning that file stands
+    # in for any stored value the current code would now derive differently.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+
+    good = json.loads((cache_dir / "info").read_text())
+    poisoned = json.loads(json.dumps(good))
+    poisoned["data_type"] = "uint64"
+    for scale in poisoned["scales"]:
+        scale["resolution"] = [0.0, 0.0, 0.0]
+    (cache_dir / "info").write_text(json.dumps(poisoned))
+
+    resp = client.get(f"/data/{relpath}/info")
+    assert resp.status_code == 200
+    served = resp.json()
+    assert served["data_type"] == "int16"
+    assert all(r > 0 for s in served["scales"] for r in s["resolution"])
+    # still the cache's own scale set, not a single-scale fallback: level 0
+    # plus exactly the levels the fingerprint says were built
+    fp = json.loads((cache_dir / "fingerprint.json").read_text())
+    assert [s["key"] for s in served["scales"]] == ["1_1_1", *fp["scales"]]
+    assert [s["key"] for s in served["scales"]] == [s["key"] for s in good["scales"]]
 
 
 def test_cached_chunk_byte_identical_to_disk(cached_setup):

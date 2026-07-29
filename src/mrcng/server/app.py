@@ -143,24 +143,48 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
             hdr = handle.hdr
             cache_dir = _cache_dir_for(settings, relpath)
             validity, fp = handle.validity_for(cache_dir, _current_params(settings, hdr))
-            if validity == Validity.VALID:
-                _log_access(relpath, "info", "", True, start)
-                return Response(
-                    content=(cache_dir / "info").read_bytes(),
-                    media_type="application/json",
-                    headers={
-                        "Cache-Control": "no-cache, must-revalidate",
-                        "ETag": f'"{fp["source_header_sha256"][:16]}"',
-                    },
-                )
-
-            scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), min_axis_size=32, max_levels=1)
-            info = build_info(hdr, scales, chunk_size=settings.chunk_size)
-            etag = _source_etag(hdr)
+            cache_hit = validity == Validity.VALID and fp is not None
+            if cache_hit:
+                # Rebuilt from the live header, never served from
+                # cache_dir/"info" verbatim. Everything in info is a pure
+                # function of the header plus the scale plan, and the
+                # fingerprint validates neither: it compares chunk addressing
+                # (chunk_size/encoding/dtype) and source identity only, and
+                # ignores generator_version entirely. Serving the stored bytes
+                # meant any fix to voxel-size or data_type derivation kept
+                # returning the old wrong answer for every already-cached
+                # dataset until someone force-rebuilt -- which is how a
+                # zero-cella-z tilt stack went on advertising
+                # "resolution": [.., .., 0.0] and getting rejected by
+                # Neuroglancer long after the header fix landed. Recomputing
+                # costs one build_info call on a ~1KB body, once per layer.
+                #
+                # fp stays authoritative for *which* levels exist, exactly as
+                # in _serve_chunk: min_axis_size/max_levels come from the
+                # fingerprint (they don't invalidate the cache, so this
+                # build's values may differ from the server's settings), and
+                # fp["scales"] is the built set. It records scales[1:] --
+                # level 0 is served from the source, not the cache -- so
+                # 1_1_1 is always advertised on top of it.
+                advertised = {"1_1_1", *fp["scales"]}
+                scales = [
+                    s for s in plan_scales(
+                        (hdr.nx, hdr.ny, hdr.nz),
+                        fp["params"]["min_axis_size"], fp["params"]["max_levels"],
+                    )
+                    if s.key in advertised
+                ]
+                chunk_size = tuple(fp["params"]["chunk_size"])
+                etag = f'"{fp["source_header_sha256"][:16]}"'
+            else:
+                scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), min_axis_size=32, max_levels=1)
+                chunk_size = settings.chunk_size
+                etag = _source_etag(hdr)
+            info = build_info(hdr, scales, chunk_size=chunk_size)
     except MrcFormatError as e:
         return _header_error_response(e)
 
-    _log_access(relpath, "info", "", False, start)
+    _log_access(relpath, "info", "", cache_hit, start)
     return Response(
         content=json.dumps(info),
         media_type="application/json",

@@ -24,7 +24,7 @@ from mrcng.paths import resolve_source, PathNotAllowed, dataset_id, cache_dir_fo
 from mrcng.precomputed import (
     plan_scales, build_info, parse_chunk_name, clip_chunk_to_scale, encode_chunk, ScaleLevel,
 )
-from mrcng.reader import read_chunk, ChunkOutOfBounds, UnexpectedEOF
+from mrcng.reader import read_chunk, choose_strategy, ChunkOutOfBounds, UnexpectedEOF
 from mrcng.server.fdcache import FdCache
 
 MRCNG_VERSION = "0.1.0"
@@ -160,9 +160,12 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
             except ValueError:
                 return Response(status_code=404)
 
+            threshold = settings.read_row_bytes_threshold
             async with semaphore:
                 try:
-                    arr = await asyncio.to_thread(read_chunk, fd, hdr, cx0, cx1, cy0, cy1, cz0, cz1)
+                    arr = await asyncio.to_thread(
+                        read_chunk, fd, hdr, cx0, cx1, cy0, cy1, cz0, cz1, threshold,
+                    )
                 except (ChunkOutOfBounds, UnexpectedEOF):
                     return Response(status_code=404)
 
@@ -171,7 +174,11 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
             return Response(
                 content=body,
                 media_type="application/octet-stream",
-                headers={"Cache-Control": "public, max-age=31536000, immutable"},
+                headers={
+                    "Cache-Control": "public, max-age=31536000, immutable",
+                    "X-Mrcng-Read-Strategy": choose_strategy(
+                        cx0, cx1, hdr.dtype.itemsize, threshold).value,
+                },
             )
 
         cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)

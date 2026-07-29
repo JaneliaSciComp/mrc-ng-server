@@ -62,12 +62,19 @@ def read_chunk(
                 raw = pread_exact(fd, row_len * itemsize, offset)
                 out[zi, yi, :] = np.frombuffer(raw, dtype=hdr.dtype, count=row_len)
     else:
-        span_len = x1  # from column 0 through x1, then slice out [x0:x1]
+        # One pread per z, spanning (z, y0, x0) through (z, y1-1, x1) inclusive,
+        # then slice the x columns out of the buffer. Trades an nx/(x1-x0)
+        # over-read for (y1-y0)x fewer syscalls; the over-read is shared through
+        # the page cache with the neighbouring x-chunks Neuroglancer requests in
+        # the same batch. Reading per (z, y) pair here instead would cost every
+        # syscall AND the over-read.
+        row_len = x1 - x0
+        span_len = (y1 - 1 - y0) * hdr.nx + row_len
         for zi, z in enumerate(range(z0, z1)):
-            for yi, y in enumerate(range(y0, y1)):
-                offset = hdr.data_offset + (z * hdr.ny * hdr.nx + y * hdr.nx) * itemsize
-                raw = pread_exact(fd, span_len * itemsize, offset)
-                full_row = np.frombuffer(raw, dtype=hdr.dtype, count=span_len)
-                out[zi, yi, :] = full_row[x0:x1]
+            offset = hdr.data_offset + (z * hdr.ny * hdr.nx + y0 * hdr.nx + x0) * itemsize
+            raw = pread_exact(fd, span_len * itemsize, offset)
+            span = np.frombuffer(raw, dtype=hdr.dtype, count=span_len)
+            for yi in range(y1 - y0):
+                out[zi, yi, :] = span[yi * hdr.nx: yi * hdr.nx + row_len]
 
     return out

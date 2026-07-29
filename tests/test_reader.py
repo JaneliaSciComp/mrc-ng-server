@@ -3,6 +3,7 @@ import os
 import numpy as np
 import pytest
 
+from mrcng import reader as reader_module
 from mrcng.mrcheader import parse_header
 from mrcng.reader import (
     pread_exact, read_chunk, choose_strategy, ReadStrategy,
@@ -71,6 +72,47 @@ def test_read_chunk_row_wise_and_span_wise_agree(make_mrc_file):
         row_wise = read_chunk(fd, hdr, 0, 4096, 0, 4, 0, 4, row_bytes_threshold=0)
         span_wise = read_chunk(fd, hdr, 0, 4096, 0, 4, 0, 4, row_bytes_threshold=10**9)
         np.testing.assert_array_equal(row_wise, span_wise)
+    finally:
+        os.close(fd)
+
+
+def test_read_chunk_strategies_agree_on_an_interior_region(make_mrc_file):
+    # x0 > 0 and x1 < nx: the span buffer starts mid-row, so the per-row slice
+    # offsets are where span-wise addressing can go wrong. The full-width case
+    # above cannot catch it.
+    def fill(zz, yy, xx):
+        return (xx + 1000 * yy + 1_000_000 * zz) % 30000
+
+    path = make_mrc_file(shape=(300, 20, 6), mode=1, fill=fill)
+    fd, hdr = _open_and_parse(path)
+    try:
+        args = (fd, hdr, 137, 201, 3, 17, 1, 5)
+        row_wise = read_chunk(*args, row_bytes_threshold=0)
+        span_wise = read_chunk(*args, row_bytes_threshold=10**9)
+        np.testing.assert_array_equal(row_wise, span_wise)
+
+        import mrcfile
+        with mrcfile.open(path, permissive=True) as mf:
+            np.testing.assert_array_equal(span_wise, mf.data[1:5, 3:17, 137:201])
+    finally:
+        os.close(fd)
+
+
+def test_span_wise_issues_one_pread_per_z(make_mrc_file, monkeypatch):
+    """Regression: span-wise looped over (z, y) pairs like row-wise, so it paid
+    every syscall *and* over-read up to 64x on a wide volume."""
+    path = make_mrc_file(shape=(4096, 64, 8), mode=1)
+    fd, hdr = _open_and_parse(path)
+    try:
+        calls = []
+        real_pread = os.pread
+        monkeypatch.setattr(reader_module.os, "pread",
+                            lambda f, n, o: (calls.append(n), real_pread(f, n, o))[1])
+
+        read_chunk(fd, hdr, 4032, 4096, 0, 64, 0, 4, row_bytes_threshold=10**9)
+        assert len(calls) == 4  # one per z-plane, not 4 * 64
+        # tight span: (y1-1-y0)*nx + (x1-x0) elements, not the whole 0..x1 prefix
+        assert calls == [((64 - 1) * 4096 + 64) * 2] * 4
     finally:
         os.close(fd)
 

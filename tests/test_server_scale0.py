@@ -63,6 +63,28 @@ def test_scale0_chunk_matches_source(client, tmp_path):
     np.testing.assert_array_equal(got, expected)
 
 
+def test_read_strategy_is_reported_and_tunable(tmp_path, make_mrc_file):
+    # the threshold is the only knob left once span-wise stops being strictly
+    # dominated, so it has to be settable and the choice has to be visible
+    from mrcng.server.config import Settings
+    from mrcng.server.app import create_app
+    from fastapi.testclient import TestClient
+
+    source_root = tmp_path / "src2"; source_root.mkdir()
+    (tmp_path / "cache2").mkdir()
+    make_mrc_file(name="src2/t.mrc", shape=(80, 60, 40), mode=1)
+
+    def strategy_for(threshold):
+        settings = Settings(source_root=source_root, cache_root=tmp_path / "cache2",
+                            read_row_bytes_threshold=threshold)
+        resp = TestClient(create_app(settings)).get("/data/t.mrc/1_1_1/0-64_0-60_0-40")
+        assert resp.status_code == 200
+        return resp.headers["x-mrcng-read-strategy"]
+
+    assert strategy_for(0) == "row_wise"
+    assert strategy_for(10**9) == "span_wise"
+
+
 def test_scale0_chunk_out_of_grid_404s(client):
     resp = client.get("/data/tomo.mrc/1_1_1/1000-1064_0-60_0-40")
     assert resp.status_code == 404

@@ -7,7 +7,7 @@ import pytest
 
 from mrcng.mrcheader import (
     parse_header, UnsupportedModeError, UnsupportedByteOrderError,
-    NonStandardAxisOrderError, TruncatedFileError,
+    NonStandardAxisOrderError, NonStandardGridSizeError, TruncatedFileError,
 )
 
 
@@ -73,6 +73,23 @@ def test_nxstart_nystart_nzstart_are_recorded(make_mrc_file):
         assert (hdr.nxstart, hdr.nystart, hdr.nzstart) == (
             mf.header.nxstart, mf.header.nystart, mf.header.nzstart,
         ) == (3, -5, 100)
+
+
+def test_mismatched_grid_size_raises(make_mrc_file):
+    # Common in image-stack MRC files: mz=1 regardless of nz. Silently using it
+    # would divide the whole cell depth into a single voxel, making the z
+    # scale bar nz times too large -- fail closed instead (sec 0).
+    path = make_mrc_file(shape=(64, 64, 50), mode=1, grid_size=(64, 64, 1))
+    with pytest.raises(NonStandardGridSizeError):
+        _parse(path)
+
+
+def test_grid_size_matching_sample_count_is_not_flagged_as_default(make_mrc_file):
+    path = make_mrc_file(shape=(8, 8, 8), mode=1, grid_size=(8, 8, 8),
+                         voxel_size_angstrom=(2.0, 2.0, 2.0))
+    hdr = _parse(path)
+    assert hdr.voxel_size_is_default is False
+    np.testing.assert_allclose(hdr.voxel_size_angstrom, (2.0, 2.0, 2.0))
 
 
 def test_zero_cella_falls_back_to_default_voxel_size(make_mrc_file):

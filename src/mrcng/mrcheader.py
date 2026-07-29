@@ -40,6 +40,10 @@ class NonStandardAxisOrderError(MrcFormatError):
     pass
 
 
+class NonStandardGridSizeError(MrcFormatError):
+    pass
+
+
 class TruncatedFileError(MrcFormatError):
     pass
 
@@ -132,6 +136,18 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
         voxel_size = (1.0, 1.0, 1.0)
         voxel_size_is_default = True
     else:
+        if (mx, my, mz) != (nx, ny, nz):
+            # Fail closed (sec 0) rather than silently computing a bogus
+            # per-axis voxel size. This is a real-world case, not a
+            # hypothetical: image-stack MRC files (each "z" an independent 2D
+            # image, not a 3D volume) conventionally set mz=1 regardless of
+            # nz, which would otherwise divide the whole cell depth into a
+            # single voxel and make the z scale bar nz times too large.
+            raise NonStandardGridSizeError(
+                f"grid size (mx,my,mz)=({mx},{my},{mz}) does not match sample "
+                f"count (nx,ny,nz)=({nx},{ny},{nz}); per-axis voxel size would "
+                f"be unreliable (common in image-stack MRC files, e.g. mz=1)"
+            )
         voxel_size = (cella[0] / mx, cella[1] / my, cella[2] / mz)
 
     return MrcHeader(

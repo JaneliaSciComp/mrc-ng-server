@@ -1,9 +1,7 @@
 # Design: MRC → Neuroglancer Precomputed Service
 
-Source of truth for this project. Adapted from the user-authored plan at
-`notes/mrc-neuroglancer-implementation-plan.md` (kept locally, not tracked in
-git). This document is the tracked, authoritative version; where it corrects
-or extends the notes plan, this document wins.
+Source of truth for this project. This document is the tracked, authoritative version; 
+where it corrects or extends the notes plan, this document wins.
 
 Two deliverables sharing one library, `mrcng`:
 

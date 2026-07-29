@@ -30,6 +30,11 @@ from mrcng.reader import read_chunk
 
 GENERATOR_VERSION = "mrc-pyramid 0.1.0"
 
+# Peak RSS per worker is roughly 3x this: the int16 source block, plus the int32
+# accumulator block_mean allocates over it. Budget accordingly when setting
+# --jobs.
+DEFAULT_MAX_BLOCK_BYTES = 256 << 20
+
 
 class BuildStatus(enum.Enum):
     BUILT = "built"
@@ -69,17 +74,55 @@ def _write_chunk(cache_dir: Path, scale_key: str, name: str, arr: np.ndarray) ->
     return len(body)
 
 
-def _build_level_from_source(fd, hdr, cache_dir: Path, level0, level1, chunk_size) -> int:
-    fx, fy, fz = level1.factors  # level0's factors are (1,1,1), so cumulative == per-step here
-    cache_bytes = 0
-    for x0, x1, y0, y1, z0, z1 in _chunk_grid(level1.size, chunk_size):
-        src_x0, src_x1 = x0 * fx, min(x1 * fx, level0.size[0])
-        src_y0, src_y1 = y0 * fy, min(y1 * fy, level0.size[1])
-        src_z0, src_z1 = z0 * fz, min(z1 * fz, level0.size[2])
+def _build_level_from_source(fd, hdr, cache_dir: Path, level0, level1, chunk_size,
+                              max_block_bytes: int = DEFAULT_MAX_BLOCK_BYTES) -> int:
+    """Stream level 1 out of the MRC one output chunk *row* at a time.
 
-        block = read_chunk(fd, hdr, src_x0, src_x1, src_y0, src_y1, src_z0, src_z1)
-        downsampled = block_mean(block, (fz, fy, fx))
-        cache_bytes += _write_chunk(cache_dir, level1.key, chunk_name(x0, x1, y0, y1, z0, z1), downsampled)
+    Reading one output chunk at a time instead makes each source read only
+    chunk_x * fx columns wide, which is far under a page for the usual 64/int16
+    case, so reader.read_chunk picks span-wise and re-reads the whole row prefix
+    once per x-chunk: 16.5x the volume in bytes and 32x the syscalls on a
+    4096-wide tomogram. Full-width rows are over a page, so the read goes
+    row-wise and each source byte is touched once.
+
+    x pieces are cut on output-chunk boundaries, which are multiples of
+    chunk_x * fx in source coordinates and therefore aligned to the block-mean
+    grid -- so splitting for memory cannot change a single output voxel. The
+    only short block is at the volume edge, exactly as when reading one chunk.
+    """
+    fx, fy, fz = level1.factors  # level0's factors are (1,1,1), so cumulative == per-step here
+    cx, cy, cz = chunk_size
+    sx, sy, sz = level1.size
+    itemsize = hdr.dtype.itemsize
+    cache_bytes = 0
+
+    for z0 in range(0, sz, cz):
+        z1 = min(z0 + cz, sz)
+        for y0 in range(0, sy, cy):
+            y1 = min(y0 + cy, sy)
+            src_z0, src_z1 = z0 * fz, min(z1 * fz, level0.size[2])
+            src_y0, src_y1 = y0 * fy, min(y1 * fy, level0.size[1])
+
+            # bytes one source x-column costs across this band, then how many
+            # whole output chunks of x fit in the budget (at least one)
+            column_bytes = (src_z1 - src_z0) * (src_y1 - src_y0) * itemsize
+            per_chunk_bytes = column_bytes * cx * fx
+            step = max(1, max_block_bytes // per_chunk_bytes) * cx
+
+            for px0 in range(0, sx, step):
+                px1 = min(px0 + step, sx)
+                src_x0, src_x1 = px0 * fx, min(px1 * fx, level0.size[0])
+
+                block = read_chunk(fd, hdr, src_x0, src_x1, src_y0, src_y1, src_z0, src_z1)
+                band = block_mean(block, (fz, fy, fx))
+                del block
+
+                for x0 in range(px0, px1, cx):
+                    x1 = min(x0 + cx, sx)
+                    name = chunk_name(x0, x1, y0, y1, z0, z1)
+                    cache_bytes += _write_chunk(
+                        cache_dir, level1.key, name, band[:, :, x0 - px0:x1 - px0],
+                    )
     return cache_bytes
 
 
@@ -171,7 +214,8 @@ def _open_source(source_root, relpath: str):
     return fd, hdr
 
 
-def build_one(source_root, cache_root, relpath: str, params: Params, force: bool = False) -> BuildResult:
+def build_one(source_root, cache_root, relpath: str, params: Params, force: bool = False,
+              max_block_bytes: int = DEFAULT_MAX_BLOCK_BYTES) -> BuildResult:
     source_root, cache_root = Path(source_root), Path(cache_root)
     start = time.monotonic()
     ds_id = dataset_id(relpath)
@@ -215,7 +259,9 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
             levels_built = 0
 
             if len(scales) > 1:
-                cache_bytes += _build_level_from_source(fd, hdr, cache_dir, scales[0], scales[1], params.chunk_size)
+                cache_bytes += _build_level_from_source(
+                    fd, hdr, cache_dir, scales[0], scales[1], params.chunk_size, max_block_bytes,
+                )
                 levels_built += 1
                 for i in range(2, len(scales)):
                     cache_bytes += _build_level_from_previous(

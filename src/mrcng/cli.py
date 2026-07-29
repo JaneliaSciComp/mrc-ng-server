@@ -11,7 +11,7 @@ from pathlib import Path
 from mrcng.fingerprint import Params, read_fingerprint, validate
 from mrcng.mrcheader import parse_header
 from mrcng.paths import dataset_id, cache_dir_for
-from mrcng.pyramid import build_one, BuildStatus
+from mrcng.pyramid import build_one, BuildStatus, DEFAULT_MAX_BLOCK_BYTES
 
 
 def _parse_chunk_size(s: str) -> tuple[int, int, int]:
@@ -19,6 +19,15 @@ def _parse_chunk_size(s: str) -> tuple[int, int, int]:
     if len(parts) != 3:
         raise argparse.ArgumentTypeError("chunk-size must be X,Y,Z")
     return parts
+
+
+def _parse_size(s: str) -> int:
+    """256M / 2G / 1048576 -> bytes."""
+    units = {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30}
+    s = s.strip().upper().rstrip("B")
+    if s and s[-1] in units:
+        return int(float(s[:-1]) * units[s[-1]])
+    return int(s)
 
 
 def _iter_mrc_files(source_root: Path, globs: list[str]):
@@ -44,7 +53,8 @@ def _build_command(args) -> int:
     records = []
     for relpath in _iter_mrc_files(source_root, globs):
         try:
-            result = build_one(source_root, cache_root, relpath, params, force=args.force)
+            result = build_one(source_root, cache_root, relpath, params, force=args.force,
+                               max_block_bytes=args.max_block_bytes)
             record = {
                 "relpath": result.relpath, "dataset_id": result.dataset_id,
                 "status": result.status.value, "source_bytes": result.source_bytes,
@@ -117,6 +127,9 @@ def main(argv: list[str] | None = None) -> int:
     build_p.add_argument("--chunk-size", type=_parse_chunk_size, default=(64, 64, 64))
     build_p.add_argument("--min-axis-size", type=int, default=32)
     build_p.add_argument("--max-levels", type=int, default=6)
+    build_p.add_argument("--max-block-bytes", type=_parse_size, default=DEFAULT_MAX_BLOCK_BYTES,
+                         help="cap on one streamed source block (e.g. 256M); peak RSS "
+                              "per worker is roughly 3x this")
     build_p.add_argument("--force", action="store_true")
     build_p.add_argument("--report")
     build_p.set_defaults(func=_build_command)

@@ -86,6 +86,60 @@ def test_build_records_actual_file_dtype_not_the_callers_guess(tmp_path, make_mr
     assert fp["params"]["dtype"] == "float32"
 
 
+def test_block_splitting_does_not_change_any_output_voxel(tmp_path, make_mrc_file):
+    """The memory budget cuts the x range into pieces. Pieces land on output-chunk
+    boundaries, which are factor-aligned, so a tiny budget and an unlimited one
+    must produce byte-identical chunk trees. Misaligned pieces would silently
+    change edge voxels of every piece."""
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/tomo.mrc", shape=(101, 37, 13), mode=1,
+                  fill=lambda zz, yy, xx: (xx + 1000 * yy + 1_000_000 * zz) % 30000)
+
+    trees = []
+    for budget in (1, 1 << 30):  # 1 byte forces one output chunk per read
+        cache_root = tmp_path / f"cache{budget}"
+        cache_root.mkdir()
+        build_one(source_root, cache_root, "tomo.mrc", _params(), max_block_bytes=budget)
+        cache_dir = cache_dir_for(cache_root, dataset_id("tomo.mrc"))
+        trees.append({
+            p.relative_to(cache_dir).as_posix(): p.read_bytes()
+            for p in sorted(cache_dir.rglob("*")) if p.is_file() and p.name != "fingerprint.json"
+        })
+
+    assert trees[0].keys() == trees[1].keys()
+    assert len(trees[0]) > 1
+    for name in trees[0]:
+        assert trees[0][name] == trees[1][name], f"{name} differs between block budgets"
+
+
+def test_level1_pass_reads_each_source_byte_about_once(tmp_path, make_mrc_file, monkeypatch):
+    """Regression: building one output chunk at a time made each source read
+    narrower than a page, so span-wise re-read the row prefix per x-chunk --
+    16.5x the volume in bytes, 32x the syscalls."""
+    import os
+    from mrcng import reader as reader_module
+
+    source_root = tmp_path / "source"; source_root.mkdir()
+    cache_root = tmp_path / "cache"; cache_root.mkdir()
+    nx, ny, nz = 2048, 64, 16
+    make_mrc_file(name="source/tomo.mrc", shape=(nx, ny, nz), mode=1)
+
+    total = 0
+    real_pread = os.pread
+
+    def counting(fd, n, off):
+        nonlocal total
+        buf = real_pread(fd, n, off)
+        total += len(buf)
+        return buf
+
+    monkeypatch.setattr(reader_module.os, "pread", counting)
+    build_one(source_root, cache_root, "tomo.mrc", _params())
+
+    volume_bytes = nx * ny * nz * 2
+    assert total / volume_bytes < 1.2, f"read {total / volume_bytes:.1f}x the volume"
+
+
 def test_skips_valid_cache_unless_forced(source_and_cache):
     source_root, cache_root, relpath = source_and_cache
     first = build_one(source_root, cache_root, relpath, _params())

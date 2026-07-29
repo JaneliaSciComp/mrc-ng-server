@@ -1,8 +1,9 @@
 """FastAPI service speaking the Neuroglancer precomputed protocol.
 
-M2 scope: scale 0 only, read directly from the MRC on every request (no fd
-cache, no fingerprint/cache logic yet -- those are added in later tasks
-without changing this routing structure).
+Scale 0 is always read directly from the MRC. Scales 1..N are served from
+the cache only when a fingerprint validates -- otherwise info advertises a
+single scale and chunk requests above scale 0 404, never computing anything
+on the request path.
 """
 from __future__ import annotations
 
@@ -13,8 +14,9 @@ import re
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from mrcng.fingerprint import Params, Validity, read_fingerprint, validate as validate_fingerprint
 from mrcng.mrcheader import parse_header, MrcFormatError
-from mrcng.paths import resolve_source, PathNotAllowed
+from mrcng.paths import resolve_source, PathNotAllowed, dataset_id, cache_dir_for
 from mrcng.precomputed import (
     plan_scales, build_info, parse_chunk_name, clip_chunk_to_scale, encode_chunk, ScaleLevel,
 )
@@ -34,6 +36,18 @@ def _open_header(settings, relpath: str):
     except BaseException:
         os.close(fd)
         raise
+
+
+def _current_params(settings, hdr) -> Params:
+    return Params(
+        chunk_size=tuple(settings.chunk_size), downsample="mean",
+        min_axis_size=32, max_levels=6, dtype=hdr.dtype.name, encoding="raw",
+    )
+
+
+def _cache_dir_and_fingerprint(settings, hdr, relpath: str):
+    cache_dir = cache_dir_for(settings.cache_root, dataset_id(relpath))
+    return cache_dir, read_fingerprint(cache_dir)
 
 
 def get_app() -> FastAPI:
@@ -82,12 +96,16 @@ def _serve_info(settings, relpath: str) -> Response:
         return Response(status_code=404)
 
     try:
-        try:
-            scales = plan_scales(
-                (hdr.nx, hdr.ny, hdr.nz),
-                min_axis_size=32,
-                max_levels=1,  # M2: single scale only, no cache awareness yet
+        cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
+        if fp is not None and validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) == Validity.VALID:
+            return Response(
+                content=(cache_dir / "info").read_bytes(),
+                media_type="application/json",
+                headers={"Cache-Control": "no-cache, must-revalidate"},
             )
+
+        try:
+            scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), min_axis_size=32, max_levels=1)
             info = build_info(hdr, scales, chunk_size=settings.chunk_size)
         except MrcFormatError as e:
             return Response(content=str(e), status_code=422)
@@ -108,29 +126,42 @@ def _serve_chunk(settings, relpath: str, scale_key: str, chunk_str: str) -> Resp
         return Response(status_code=404)
 
     try:
-        if scale_key != "1_1_1":
-            return Response(status_code=404)  # M2: no cache, nothing above scale 0
-
         x0, x1, y0, y1, z0, z1 = parse_chunk_name(chunk_str)
         if x1 <= x0 or y1 <= y0 or z1 <= z0:
             return Response(status_code=400)
 
-        scale0 = ScaleLevel(key="1_1_1", size=(hdr.nx, hdr.ny, hdr.nz), factors=(1, 1, 1))
-        try:
-            cx0, cx1, cy0, cy1, cz0, cz1 = clip_chunk_to_scale(
-                scale0, x0, x1, y0, y1, z0, z1, chunk_size=settings.chunk_size,
+        if scale_key == "1_1_1":
+            scale0 = ScaleLevel(key="1_1_1", size=(hdr.nx, hdr.ny, hdr.nz), factors=(1, 1, 1))
+            try:
+                cx0, cx1, cy0, cy1, cz0, cz1 = clip_chunk_to_scale(
+                    scale0, x0, x1, y0, y1, z0, z1, chunk_size=settings.chunk_size,
+                )
+            except ValueError:
+                return Response(status_code=404)
+
+            try:
+                arr = read_chunk(fd, hdr, cx0, cx1, cy0, cy1, cz0, cz1)
+            except (ChunkOutOfBounds, UnexpectedEOF):
+                return Response(status_code=404)
+
+            body = encode_chunk(arr)
+            return Response(
+                content=body,
+                media_type="application/octet-stream",
+                headers={"Cache-Control": "public, max-age=31536000, immutable"},
             )
-        except ValueError:
+
+        cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
+        if fp is None or validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) != Validity.VALID:
+            return Response(status_code=404)  # no valid cache -> nothing above scale 0
+
+        chunk_path = cache_dir / scale_key / chunk_str
+        if not chunk_path.is_file():
             return Response(status_code=404)
 
-        try:
-            arr = read_chunk(fd, hdr, cx0, cx1, cy0, cy1, cz0, cz1)
-        except (ChunkOutOfBounds, UnexpectedEOF):
-            return Response(status_code=404)
-
-        body = encode_chunk(arr)
-        return Response(
-            content=body,
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            chunk_path,
             media_type="application/octet-stream",
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )

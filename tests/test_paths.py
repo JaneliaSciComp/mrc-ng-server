@@ -3,7 +3,7 @@ import hashlib
 
 import pytest
 
-from mrcng.paths import dataset_id, cache_dir_for, resolve_source, PathNotAllowed
+from mrcng.paths import dataset_id, cache_dir_for, resolve_source, resolve_dir, PathNotAllowed
 
 
 def test_dataset_id_is_deterministic_sha256_prefix():
@@ -64,3 +64,50 @@ def test_resolve_source_rejects_symlink_escape(tmp_path):
             resolve_source(root, "escape.mrc")
     finally:
         outside.unlink()
+
+
+def test_resolve_dir_root_with_empty_relpath(tmp_path):
+    assert resolve_dir(tmp_path, "") == tmp_path.resolve()
+
+
+def test_resolve_dir_subdirectory(tmp_path):
+    (tmp_path / "sub").mkdir()
+    assert resolve_dir(tmp_path, "sub") == (tmp_path / "sub").resolve()
+
+
+@pytest.mark.parametrize("bad_relpath", [
+    "../escape",
+    "sub/../../escape",
+    "/etc",
+    "sub/\x00null",
+])
+def test_resolve_dir_rejects_unsafe_paths(tmp_path, bad_relpath):
+    with pytest.raises(PathNotAllowed):
+        resolve_dir(tmp_path, bad_relpath)
+
+
+def test_resolve_dir_rejects_missing_directory(tmp_path):
+    with pytest.raises(PathNotAllowed):
+        resolve_dir(tmp_path, "does_not_exist")
+
+
+def test_resolve_dir_rejects_a_file_path(tmp_path):
+    f = tmp_path / "a.mrc"
+    f.write_bytes(b"x")
+    with pytest.raises(PathNotAllowed):
+        resolve_dir(tmp_path, "a.mrc")
+
+
+def test_resolve_dir_rejects_symlink_escape(tmp_path):
+    outside = tmp_path.parent / "outside_dir_target"
+    outside.mkdir(exist_ok=True)
+    root = tmp_path / "root"
+    root.mkdir()
+    link = root / "escape"
+    os.symlink(outside, link)
+    try:
+        with pytest.raises(PathNotAllowed):
+            resolve_dir(root, "escape")
+    finally:
+        link.unlink()
+        outside.rmdir()

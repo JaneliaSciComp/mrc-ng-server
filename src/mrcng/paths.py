@@ -43,3 +43,28 @@ def resolve_source(root: Path, relpath: str) -> Path:
         raise PathNotAllowed(f"not a file: {relpath!r}")
 
     return candidate
+
+
+def resolve_dir(root: Path, relpath: str) -> Path:
+    """Like resolve_source, but for directories: relpath == "" means the
+    root itself (used for /browse with no subpath), and the resolved
+    candidate must be a directory, not a file."""
+    if "\x00" in relpath:
+        raise PathNotAllowed(f"null byte in relpath: {relpath!r}")
+
+    if relpath:
+        parts = Path(relpath).parts
+        if any(p == ".." for p in parts):
+            raise PathNotAllowed(f"path traversal in relpath: {relpath!r}")
+        if Path(relpath).is_absolute():
+            raise PathNotAllowed(f"absolute relpath not allowed: {relpath!r}")
+
+    root_resolved = Path(root).resolve()
+    candidate = (root_resolved / relpath).resolve() if relpath else root_resolved
+
+    if not candidate.is_relative_to(root_resolved):
+        raise PathNotAllowed(f"resolved path escapes root: {relpath!r}")
+    if not candidate.is_dir():
+        raise PathNotAllowed(f"not a directory: {relpath!r}")
+
+    return candidate

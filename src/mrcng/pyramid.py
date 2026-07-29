@@ -12,7 +12,7 @@ import fcntl
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -178,6 +178,12 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
 
     fd, hdr = _open_source(source_root, relpath)
     try:
+        # dtype is a per-file property derived from the header, not a caller
+        # chosen build setting -- a source tree can mix int16 tomograms with
+        # float32 ones, so params.dtype must reflect *this* file, never a
+        # value the caller guessed for the whole tree.
+        params = replace(params, dtype=hdr.dtype.name)
+
         existing = read_fingerprint(cache_dir)
         if existing is not None and not force and validate(existing, hdr, fd, params) == Validity.VALID:
             return BuildResult(relpath, ds_id, BuildStatus.SKIPPED_VALID, source_bytes=hdr.file_size)

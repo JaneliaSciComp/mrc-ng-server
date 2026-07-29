@@ -36,7 +36,8 @@ def _build_command(args) -> int:
     params = Params(
         chunk_size=tuple(args.chunk_size), downsample="mean",
         min_axis_size=args.min_axis_size, max_levels=args.max_levels,
-        dtype="int16", encoding="raw",
+        dtype="unset",  # build_one derives the real per-file dtype from each header
+        encoding="raw",
     )
     globs = args.glob or ["*.mrc"]
 

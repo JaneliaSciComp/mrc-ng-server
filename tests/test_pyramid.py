@@ -66,6 +66,26 @@ def test_build_output_matches_in_memory_reference_downsample(source_and_cache):
     np.testing.assert_array_equal(on_disk, expected_level1[0:8, 0:8, 0:8])
 
 
+def test_build_records_actual_file_dtype_not_the_callers_guess(tmp_path, make_mrc_file):
+    # regression test: caller passes dtype="int16" (e.g. a CLI default meant
+    # for a whole source tree), but this particular file is float32 -- the
+    # written fingerprint must reflect the real per-file dtype, or the
+    # server's later validate() call will wrongly see it as INCOMPATIBLE.
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    make_mrc_file(name="source/tomo.mrc", shape=(16, 16, 16), mode=2)  # float32
+
+    result = build_one(source_root, cache_root, "tomo.mrc", _params(dtype="int16"))
+    assert result.status == BuildStatus.BUILT
+
+    ds_id = dataset_id("tomo.mrc")
+    cache_dir = cache_dir_for(cache_root, ds_id)
+    fp = read_fingerprint(cache_dir)
+    assert fp["params"]["dtype"] == "float32"
+
+
 def test_skips_valid_cache_unless_forced(source_and_cache):
     source_root, cache_root, relpath = source_and_cache
     first = build_one(source_root, cache_root, relpath, _params())

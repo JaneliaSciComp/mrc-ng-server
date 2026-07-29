@@ -145,6 +145,26 @@ before you have a number to compare against.
    `/info` automatically drops back to a single scale and requests for
    higher scales 404 — reload the layer in Neuroglancer to pick that up.
 
+## Browsing data in a web browser
+
+Instead of constructing Neuroglancer URLs by hand, browse `MRCNG_SOURCE_ROOT`
+directly:
+
+```
+https://your-host:8000/browse
+```
+
+Click through subdirectories; every `.mrc`/`.rec` file gets an "Open in
+Neuroglancer" link that opens `https://neuroglancer-demo.appspot.com` with an
+`"auto"`-type layer already pointing at that file — the same URL you'd build
+by hand per the section above, generated for you.
+
+This is deliberately minimal: no search, filtering, or cache-status
+indicators (use `pixi run pyramid-status` for that), no JavaScript, and it
+lives in its own module (`src/mrcng/server/browse.py`) separate from the
+`precomputed` API. See
+`docs/superpowers/specs/2026-07-29-browsing-ui-design.md` for the design.
+
 ## Optional: nginx in front of the server
 
 Not required, and untested in this repo (no nginx available here), but for

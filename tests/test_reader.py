@@ -40,6 +40,29 @@ def test_pread_exact_raises_on_short_read(tmp_path):
         os.close(fd)
 
 
+def test_pread_exact_loops_on_short_but_nonzero_reads(tmp_path, monkeypatch):
+    # Section 10 explicitly asks for this: a mocked pread that returns fewer
+    # bytes than requested (but never zero) must still be looped until
+    # count is satisfied, not mistaken for EOF.
+    f = tmp_path / "data.bin"
+    f.write_bytes(b"abcdefghij")
+    fd = os.open(str(f), os.O_RDONLY)
+    real_pread = os.pread
+    calls = []
+
+    def short_pread(fd_, count, offset):
+        got = real_pread(fd_, min(count, 3), offset)
+        calls.append(len(got))
+        return got
+
+    monkeypatch.setattr(reader_module.os, "pread", short_pread)
+    try:
+        assert pread_exact(fd, 10, 0) == b"abcdefghij"
+        assert calls == [3, 3, 3, 1]
+    finally:
+        os.close(fd)
+
+
 def test_choose_strategy_threshold():
     assert choose_strategy(0, 1, itemsize=2, threshold=4096) == ReadStrategy.SPAN_WISE
     assert choose_strategy(0, 2048, itemsize=2, threshold=4096) == ReadStrategy.ROW_WISE

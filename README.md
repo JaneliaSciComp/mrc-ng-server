@@ -1,12 +1,11 @@
 # mrc-ng-server
 
-Serves downsample pyramids of MRC/REC tomograms to [Neuroglancer](https://github.com/google/neuroglancer)
-via its `precomputed` protocol.
+Serves MRC/REC tomograms to [Neuroglancer](https://github.com/google/neuroglancer) via its `precomputed` protocol.
 
-Two pieces sharing one library (`mrcng`):
+There are two parts:
 
-- **`mrc-pyramid`** — an offline CLI that walks a directory of MRC files and
-  writes a downsample pyramid into a cache tree, fingerprinted against the
+- **`mrc-pyramid`** — an offline precomputation that walks a directory of MRC files and
+  writes a downsample pyramid for each one into a cache, fingerprinted against the
   source file it was built from.
 - **The FastAPI server** — serves scale 0 directly from the MRC file on every
   request (`pread`, no memory-mapping, no full-file load). Scales 1..N are

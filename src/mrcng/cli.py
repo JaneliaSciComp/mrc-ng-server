@@ -34,6 +34,18 @@ def _parse_size(s: str) -> int:
     return int(s)
 
 
+def _add_source_root_arg(parser: argparse.ArgumentParser, *, flag: bool = False) -> None:
+    name = "--source-root" if flag else "source_root"
+    parser.add_argument(name, nargs=None if flag else "?",
+                        default=os.environ.get("MRCNG_SOURCE_ROOT"),
+                        help="root of MRC files (default: $MRCNG_SOURCE_ROOT)")
+
+
+def _add_cache_root_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--cache-root", default=os.environ.get("MRCNG_CACHE_ROOT"),
+                        help="cache tree root (default: $MRCNG_CACHE_ROOT)")
+
+
 def _iter_mrc_files(source_root: Path, globs: list[str]):
     seen = set()
     for pattern in globs:
@@ -159,8 +171,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     build_p = sub.add_parser("build")
-    build_p.add_argument("source_root")
-    build_p.add_argument("--cache-root", required=True)
+    _add_source_root_arg(build_p)
+    _add_cache_root_arg(build_p)
     build_p.add_argument("--glob", action="append")
     build_p.add_argument("--chunk-size", type=_parse_chunk_size, default=(64, 64, 64))
     build_p.add_argument("--min-axis-size", type=int, default=32)
@@ -179,8 +191,8 @@ def main(argv: list[str] | None = None) -> int:
     build_p.set_defaults(func=_build_command)
 
     status_p = sub.add_parser("status")
-    status_p.add_argument("source_root")
-    status_p.add_argument("--cache-root", required=True)
+    _add_source_root_arg(status_p)
+    _add_cache_root_arg(status_p)
     status_p.add_argument("--glob", action="append")
     status_p.add_argument("--chunk-size", type=_parse_chunk_size, default=(64, 64, 64))
     status_p.add_argument("--min-axis-size", type=int, default=32)
@@ -189,12 +201,16 @@ def main(argv: list[str] | None = None) -> int:
     status_p.set_defaults(func=_status_command)
 
     prune_p = sub.add_parser("prune")
-    prune_p.add_argument("--cache-root", required=True)
-    prune_p.add_argument("--source-root", required=True)
+    _add_cache_root_arg(prune_p)
+    _add_source_root_arg(prune_p, flag=True)
     prune_p.add_argument("--glob", action="append")
     prune_p.set_defaults(func=_prune_command)
 
     args = parser.parse_args(argv)
+    if args.source_root is None:
+        parser.error("source_root is required (arg or $MRCNG_SOURCE_ROOT)")
+    if args.cache_root is None:
+        parser.error("--cache-root is required (arg or $MRCNG_CACHE_ROOT)")
     return args.func(args)
 
 

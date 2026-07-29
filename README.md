@@ -14,7 +14,8 @@ There are two parts:
   downsamples or writes anything on the request path.
 
 See [docs/superpowers/specs/2026-07-28-mrc-neuroglancer-design.md](https://github.com/JaneliaSciComp/mrc-ng-server/blob/main/docs/superpowers/specs/2026-07-28-mrc-neuroglancer-design.md) for the
-full design.
+full design, and [docs/mrc-layout-and-reads.md](https://github.com/JaneliaSciComp/mrc-ng-server/blob/main/docs/mrc-layout-and-reads.md) for why MRC suits this
+and how chunk reads actually work (read that before touching `reader.py`).
 
 ## Install
 

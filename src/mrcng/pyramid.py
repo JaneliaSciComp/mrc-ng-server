@@ -1,9 +1,19 @@
 """Pyramid build orchestration -- used only by the mrc-pyramid CLI, never by
-the server. Level 1 is built by reading directly from the source MRC, one
-output chunk (and its corresponding source sub-volume) at a time. Every
-level after that is built the same way but reads its source data from the
-previous level's cache chunk files instead of the MRC -- so the total cost
-is ~1.15 passes over the original volume, not N passes.
+the server. Level 1 is built by streaming the source MRC one output-chunk
+*row* at a time (split further only as far as a memory budget requires).
+Every level after that is built the same way but reads its source data from
+the previous level's cache chunk files instead of the MRC -- so the total
+cost is ~1.15 passes over the original volume, not N passes.
+
+Because each level is downsampled from the level above it rather than
+straight from level 0, a cascaded mean can differ from a *direct* mean of the
+same factor at the trailing edge of a non-divisible axis: the last, partial
+block gets reweighted at every step of the cascade, not just once. E.g. a
+7-wide axis binned by 2 twice ([100,200,300,400,500,600,700] -> [150,350,550,
+700] -> [250,625]) gives a last-voxel weight of 1/2 (one real sample vs. one
+padding), where binning by 4 directly ([250,600]) would give it 1/4. This is
+inherent to the cascade design, not a bug -- don't diff a deep level against a
+direct reference downsample and expect the trailing voxel to match.
 """
 from __future__ import annotations
 

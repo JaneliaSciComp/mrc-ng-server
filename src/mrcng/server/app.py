@@ -91,9 +91,13 @@ def create_app(settings) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     app.state.fd_cache = fd_cache
+    if settings.cors_origins == "*":
+        origins = ["*"]
+    else:
+        origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.cors_origins] if settings.cors_origins != "*" else ["*"],
+        allow_origins=origins,
         allow_methods=["GET"],
         allow_headers=["*"],
     )
@@ -238,8 +242,20 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
         return Response(status_code=404)
 
     _log_access(relpath, scale_key, chunk_str, True, start)
-    return FileResponse(
-        chunk_path,
+    if settings.serve_cache_via_sendfile:
+        return FileResponse(
+            chunk_path,
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    # nginx serves the body itself via X-Accel-Redirect; Python only sets
+    # headers and is out of the data path entirely.
+    rel = chunk_path.relative_to(settings.cache_root).as_posix()
+    return Response(
         media_type="application/octet-stream",
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Accel-Redirect": f"{settings.cache_internal_location}/{rel}",
+        },
     )

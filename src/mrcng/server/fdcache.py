@@ -72,6 +72,7 @@ class FdCache:
         self._assume_mode0 = assume_mode0
         self._entries: OrderedDict[tuple, _Entry] = OrderedDict()
         self._lock = threading.Lock()
+        self._eviction_count = 0
 
     def _key_for(self, path: Path) -> tuple:
         st = os.stat(path)
@@ -167,6 +168,17 @@ class FdCache:
             entry.evicted = True
             if entry.refs == 0:
                 os.close(entry.fd)
+            self._eviction_count += 1
+            # One warning per "cache size worth" of evictions, not one per
+            # eviction: scales the frequency to how bad the situation is
+            # without flooding logs. A high rate means the working set of
+            # files exceeds fd_cache_size, so every request pays an open().
+            if self._eviction_count % self._max_size == 0:
+                _logger.warning(
+                    "fd cache has evicted %d entries (cache size %d) -- the "
+                    "working set of files may exceed fd_cache_size",
+                    self._eviction_count, self._max_size,
+                )
 
     def close_all(self):
         with self._lock:

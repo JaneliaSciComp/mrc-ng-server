@@ -84,6 +84,26 @@ def test_held_handle_survives_eviction_and_fd_reuse(tmp_path):
         cache.close_all()
 
 
+def test_eviction_rate_warning_is_logged(tmp_path, caplog):
+    # A high eviction rate means the working set of files exceeds
+    # fd_cache_size, so every request is paying an open() -- the operator
+    # needs to see this, not just an empty cache silently thrashing.
+    import logging
+    from tests.conftest import make_mrc
+
+    cache = FdCache(max_size=2)
+    with caplog.at_level(logging.WARNING, logger="mrcng.server"):
+        for i in range(6):  # 4 evictions with max_size=2 -> one warning at count 2, one at 4
+            p = tmp_path / f"f{i}.mrc"
+            make_mrc(p, shape=(4, 4, 4), mode=1)
+            with cache.open(p):
+                pass
+    cache.close_all()
+
+    warnings = [r for r in caplog.records if r.name == "mrcng.server" and "evicted" in r.message]
+    assert len(warnings) == 2
+
+
 def test_evicted_fd_is_closed_once_the_last_holder_releases(tmp_path):
     from tests.conftest import make_mrc
     a = tmp_path / "a.mrc"

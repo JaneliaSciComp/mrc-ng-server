@@ -25,4 +25,9 @@ class Settings(BaseSettings):
     read_row_bytes_threshold: int = 4096
     max_concurrent_reads: int = 32
     fd_cache_size: int = 256
-    cors_origins: str = "*"
+    cors_origins: str = "*"  # "*" or a comma-separated list of origins
+    serve_cache_via_sendfile: bool = True
+    # Used only when serve_cache_via_sendfile is False: the nginx `location`
+    # that internal_redirect-serves files from cache_root, so nginx does the
+    # sendfile and Python is out of the path entirely.
+    cache_internal_location: str = "/__mrcng_cache__"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,6 +12,11 @@ class Settings(BaseSettings):
     source_root: Path
     cache_root: Path
     chunk_size: tuple[int, int, int] = (64, 64, 64)
+    # Mode-0 signedness is ambiguous without an IMOD stamp (sec 2). Must match
+    # whatever a pyramid build for the same tree used, or every mode-0 file's
+    # cache reads as INCOMPATIBLE (params.dtype mismatch) -- fail-safe, but
+    # silently so.
+    assume_mode0: Literal["int8", "uint8"] | None = None
     # Below this many bytes per chunk row, read_chunk switches from one pread per
     # (z, y) row to one pread per z-plane: 64x fewer syscalls, at an nx/(x1-x0)
     # over-read. Which side wins is a property of the storage, so this is a knob

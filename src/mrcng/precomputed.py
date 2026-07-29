@@ -104,6 +104,9 @@ def clip_chunk_to_scale(
 def encode_chunk(arr: np.ndarray) -> bytes:
     if not arr.flags["C_CONTIGUOUS"]:
         raise ValueError("array must be C-contiguous for precomputed raw encoding")
-    if arr.dtype.byteorder not in ("<", "="):
+    # Single-byte dtypes (int8/uint8, i.e. MRC mode 0) always report '|' for
+    # byteorder -- there is no endianness to get wrong when writing one byte --
+    # so only multi-byte dtypes need the little-endian check.
+    if arr.dtype.itemsize > 1 and arr.dtype.byteorder not in ("<", "="):
         raise ValueError(f"array must be little-endian, got byteorder {arr.dtype.byteorder!r}")
     return arr.tobytes()

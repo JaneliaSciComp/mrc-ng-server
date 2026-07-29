@@ -76,6 +76,7 @@ class MrcHeader:
     maps: int
     voxel_size_angstrom: tuple[float, float, float]
     voxel_size_is_default: bool
+    mode0_signedness_is_ambiguous: bool
     dtype: np.dtype
     data_offset: int
     file_size: int
@@ -86,24 +87,28 @@ class MrcHeader:
         return (self.nz, self.ny, self.nx)
 
 
-def _dtype_for_mode(mode: int, raw: bytes, assume_mode0: str | None) -> np.dtype:
+def _dtype_for_mode(mode: int, raw: bytes, assume_mode0: str | None) -> tuple[np.dtype, bool]:
+    """Returns (dtype, mode0_signedness_is_ambiguous)."""
     if mode in _UNSUPPORTED_MODES:
         raise UnsupportedModeError(f"mode {mode} is unsupported ({_UNSUPPORTED_MODE_REASONS[mode]})")
     if mode != 0:
         if mode not in _MODE_DTYPES:
             raise UnsupportedModeError(f"mode {mode} is not a recognised MRC mode")
-        return _MODE_DTYPES[mode]
+        return _MODE_DTYPES[mode], False
 
     if assume_mode0 is not None:
-        return np.dtype(np.int8 if assume_mode0 == "int8" else np.uint8)
+        return np.dtype(np.int8 if assume_mode0 == "int8" else np.uint8), False
 
     imod_stamp = int.from_bytes(raw[152:156], "little", signed=True)
     if imod_stamp == IMOD_STAMP:
         imod_flags = int.from_bytes(raw[156:160], "little", signed=True)
         signed = bool(imod_flags & IMOD_SIGNED_BIT)
-        return np.dtype(np.int8 if signed else np.uint8)
+        return np.dtype(np.int8 if signed else np.uint8), False
 
-    return np.dtype(np.int8)  # default; agrees with mrcfile's own default
+    # No IMOD stamp and no override: signedness is genuinely ambiguous (sec 2).
+    # Default to int8 (agrees with mrcfile's own default) but flag it so
+    # callers -- which have the file path, unlike this function -- can warn.
+    return np.dtype(np.int8), True
 
 
 def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | None = None) -> MrcHeader:
@@ -133,7 +138,7 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
     if nsymbt < 0:
         raise MrcFormatError(f"negative nsymbt: {nsymbt}")
 
-    dtype = _dtype_for_mode(mode, raw, assume_mode0)
+    dtype, mode0_signedness_is_ambiguous = _dtype_for_mode(mode, raw, assume_mode0)
     data_offset = HEADER_SIZE + nsymbt
     required = data_offset + nx * ny * nz * dtype.itemsize
     if required > file_size:
@@ -167,6 +172,7 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
         mapc=mapc, mapr=mapr, maps=maps,
         voxel_size_angstrom=voxel_size,
         voxel_size_is_default=voxel_size_is_default,
+        mode0_signedness_is_ambiguous=mode0_signedness_is_ambiguous,
         dtype=dtype, data_offset=data_offset,
         file_size=file_size, mtime_ns=mtime_ns,
     )

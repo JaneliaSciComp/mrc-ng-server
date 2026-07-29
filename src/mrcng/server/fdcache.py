@@ -10,6 +10,7 @@ dead; the last holder to release it does the close.
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from collections import OrderedDict
@@ -18,6 +19,8 @@ from pathlib import Path
 
 from mrcng.fingerprint import read_fingerprint, validate
 from mrcng.mrcheader import parse_header
+
+_logger = logging.getLogger("mrcng.server")
 
 
 class _Entry:
@@ -64,8 +67,9 @@ class Handle:
 
 
 class FdCache:
-    def __init__(self, max_size: int = 256):
+    def __init__(self, max_size: int = 256, assume_mode0: str | None = None):
         self._max_size = max_size
+        self._assume_mode0 = assume_mode0
         self._entries: OrderedDict[tuple, _Entry] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -96,10 +100,19 @@ class FdCache:
         fd = os.open(str(path), os.O_RDONLY)
         try:
             st = os.stat(fd)
-            hdr = parse_header(fd, st.st_size, st.st_mtime_ns)
+            hdr = parse_header(fd, st.st_size, st.st_mtime_ns, assume_mode0=self._assume_mode0)
         except BaseException:
             os.close(fd)
             raise
+
+        if hdr.mode0_signedness_is_ambiguous:
+            # Parsed once per fd-cache entry, i.e. once per (path, size,
+            # mtime_ns) -- this already rate-limits to one warning per file
+            # version rather than one per request.
+            _logger.warning(
+                "%s: mode-0 signedness is ambiguous (no IMOD stamp), defaulting to "
+                "int8; set MRCNG_ASSUME_MODE0 to override", path,
+            )
 
         with self._lock:
             existing = self._entries.get(key)

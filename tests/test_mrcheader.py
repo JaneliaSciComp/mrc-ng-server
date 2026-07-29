@@ -133,3 +133,22 @@ def test_mode0_assume_mode0_cli_override(make_mrc_file):
     path = make_mrc_file(shape=(4, 4, 4), mode=0)
     hdr = _parse(path, assume_mode0="uint8")
     assert hdr.dtype == np.dtype(np.uint8)
+    assert hdr.mode0_signedness_is_ambiguous is False
+
+
+def test_mode0_no_stamp_no_override_is_flagged_ambiguous(make_mrc_file):
+    path = make_mrc_file(shape=(4, 4, 4), mode=0)
+    hdr = _parse(path)
+    assert hdr.mode0_signedness_is_ambiguous is True
+
+
+def test_mode0_imod_stamp_present_is_not_ambiguous(make_mrc_file):
+    path = make_mrc_file(shape=(4, 4, 4), mode=0, imod_flags="signed")
+    hdr = _parse(path)
+    assert hdr.mode0_signedness_is_ambiguous is False
+
+
+def test_non_mode0_is_never_ambiguous(make_mrc_file):
+    path = make_mrc_file(shape=(4, 4, 4), mode=1)
+    hdr = _parse(path)
+    assert hdr.mode0_signedness_is_ambiguous is False

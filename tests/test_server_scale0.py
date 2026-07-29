@@ -150,6 +150,32 @@ def test_truncated_file_returns_422(tmp_path, make_mrc_file):
     assert resp.json()["error"] == "TruncatedFileError"
 
 
+def test_server_assume_mode0_setting_reaches_the_header_parser(tmp_path, make_mrc_file):
+    import numpy as np
+    source_root = tmp_path / "smode0"; source_root.mkdir()
+    (tmp_path / "cmode0").mkdir()
+    make_mrc_file(name="smode0/t.mrc", shape=(8, 8, 8), mode=0)  # no IMOD stamp -> ambiguous
+
+    settings = Settings(source_root=source_root, cache_root=tmp_path / "cmode0",
+                        assume_mode0="uint8")
+    resp = TestClient(create_app(settings)).get("/data/t.mrc/1_1_1/0-8_0-8_0-8")
+    assert resp.status_code == 200
+    assert np.frombuffer(resp.content, dtype=np.uint8).max() <= 255  # didn't error as int8/mixed
+
+
+def test_server_logs_ambiguous_mode0_signedness(tmp_path, make_mrc_file, caplog):
+    import logging
+    source_root = tmp_path / "swarn"; source_root.mkdir()
+    (tmp_path / "cwarn").mkdir()
+    make_mrc_file(name="swarn/t.mrc", shape=(8, 8, 8), mode=0)
+
+    settings = Settings(source_root=source_root, cache_root=tmp_path / "cwarn")
+    client = TestClient(create_app(settings))
+    with caplog.at_level(logging.WARNING, logger="mrcng.server"):
+        assert client.get("/data/t.mrc/info").status_code == 200
+    assert any("ambiguous" in r.message for r in caplog.records if r.name == "mrcng.server")
+
+
 def test_unexpected_eof_mid_read_returns_500_and_logs(tmp_path, make_mrc_file, monkeypatch, caplog):
     # Regression: UnexpectedEOF was lumped in with ChunkOutOfBounds -> 404, so a
     # file that shrank under the server looked like an ordinary empty tile.

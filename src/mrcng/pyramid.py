@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import fcntl
 import json
+import logging
 import os
 import shutil
 import time
@@ -27,6 +28,8 @@ from mrcng.paths import resolve_source, dataset_id, cache_dir_for
 from mrcng.precomputed import plan_scales, build_info, chunk_name
 from mrcng.precomputed import encode_chunk
 from mrcng.reader import read_chunk
+
+_logger = logging.getLogger("mrcng.pyramid")
 
 GENERATOR_VERSION = "mrc-pyramid 0.1.0"
 
@@ -207,22 +210,28 @@ def _fsync_tree(root: Path) -> None:
             os.close(dir_fd)
 
 
-def _open_source(source_root, relpath: str):
+def _open_source(source_root, relpath: str, assume_mode0: str | None = None):
     path = resolve_source(source_root, relpath)
     fd = os.open(str(path), os.O_RDONLY)
     st = os.stat(fd)
-    hdr = parse_header(fd, st.st_size, st.st_mtime_ns)
+    hdr = parse_header(fd, st.st_size, st.st_mtime_ns, assume_mode0=assume_mode0)
+    if hdr.mode0_signedness_is_ambiguous:
+        _logger.warning(
+            "%s: mode-0 signedness is ambiguous (no IMOD stamp), defaulting to "
+            "int8; pass --assume-mode0 to override", path,
+        )
     return fd, hdr
 
 
 def build_one(source_root, cache_root, relpath: str, params: Params, force: bool = False,
-              max_block_bytes: int = DEFAULT_MAX_BLOCK_BYTES) -> BuildResult:
+              max_block_bytes: int = DEFAULT_MAX_BLOCK_BYTES,
+              assume_mode0: str | None = None) -> BuildResult:
     source_root, cache_root = Path(source_root), Path(cache_root)
     start = time.monotonic()
     ds_id = dataset_id(relpath)
     cache_dir = cache_dir_for(cache_root, ds_id)
 
-    fd, hdr = _open_source(source_root, relpath)
+    fd, hdr = _open_source(source_root, relpath, assume_mode0)
     try:
         # dtype is a per-file property derived from the header, not a caller
         # chosen build setting -- a source tree can mix int16 tomograms with

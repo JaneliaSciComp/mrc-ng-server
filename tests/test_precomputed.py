@@ -103,6 +103,16 @@ def test_encode_chunk_byte_order():
     assert value == arr[1, 1, 2] == 100 + 10 + 2
 
 
+def test_encode_chunk_accepts_single_byte_dtypes():
+    # Regression: int8/uint8 (MRC mode 0) always report '|' for byteorder --
+    # there's no endianness to get wrong when writing one byte -- but the
+    # check rejected them anyway, so no mode-0 file could ever be served.
+    arr = np.arange(8, dtype=np.uint8).reshape(2, 2, 2)
+    assert encode_chunk(arr) == arr.tobytes()
+    arr8 = np.arange(-4, 4, dtype=np.int8).reshape(2, 2, 2)
+    assert encode_chunk(arr8) == arr8.tobytes()
+
+
 def test_encode_chunk_rejects_non_contiguous():
     arr = np.zeros((4, 4, 4), dtype="<i2").T  # transposed -> not C-contiguous
     with pytest.raises(ValueError):

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import multiprocessing
 import os
 import shutil
 import sys
@@ -12,6 +14,8 @@ from mrcng.fingerprint import Params, read_fingerprint, validate
 from mrcng.mrcheader import parse_header
 from mrcng.paths import dataset_id, cache_dir_for
 from mrcng.pyramid import build_one, BuildStatus, DEFAULT_MAX_BLOCK_BYTES
+
+_logger = logging.getLogger("mrcng.pyramid")
 
 
 def _parse_chunk_size(s: str) -> tuple[int, int, int]:
@@ -39,7 +43,25 @@ def _iter_mrc_files(source_root: Path, globs: list[str]):
                 yield path.relative_to(source_root).as_posix()
 
 
+def _build_one_record(task: tuple) -> dict:
+    """Top-level (picklable) so multiprocessing.Pool can call it directly."""
+    source_root, cache_root, relpath, params, force, max_block_bytes, assume_mode0 = task
+    try:
+        result = build_one(source_root, cache_root, relpath, params, force=force,
+                           max_block_bytes=max_block_bytes, assume_mode0=assume_mode0)
+        return {
+            "relpath": result.relpath, "dataset_id": result.dataset_id,
+            "status": result.status.value, "source_bytes": result.source_bytes,
+            "cache_bytes": result.cache_bytes, "levels_built": result.levels_built,
+            "duration_s": result.duration_s,
+            "voxel_size_is_default": result.voxel_size_is_default, "error": None,
+        }
+    except Exception as e:
+        return {"relpath": relpath, "status": "failed", "error": str(e)}
+
+
 def _build_command(args) -> int:
+    logging.basicConfig(level=args.log_level)
     source_root = Path(args.source_root)
     cache_root = Path(args.cache_root)
     params = Params(
@@ -49,37 +71,39 @@ def _build_command(args) -> int:
         encoding="raw",
     )
     globs = args.glob or ["*.mrc"]
+    tasks = [
+        (source_root, cache_root, relpath, params, args.force, args.max_block_bytes, args.assume_mode0)
+        for relpath in _iter_mrc_files(source_root, globs)
+    ]
 
     records = []
-    for relpath in _iter_mrc_files(source_root, globs):
-        try:
-            result = build_one(source_root, cache_root, relpath, params, force=args.force,
-                               max_block_bytes=args.max_block_bytes)
-            record = {
-                "relpath": result.relpath, "dataset_id": result.dataset_id,
-                "status": result.status.value, "source_bytes": result.source_bytes,
-                "cache_bytes": result.cache_bytes, "levels_built": result.levels_built,
-                "duration_s": result.duration_s,
-                "voxel_size_is_default": result.voxel_size_is_default, "error": None,
-            }
-        except Exception as e:
-            record = {"relpath": relpath, "status": "failed", "error": str(e)}
-        records.append(record)
-        print(json.dumps(record))
+    # Within a file the work is I/O-bound streaming; across files it
+    # parallelises cleanly (sec 8). Oversubscribing NFS with more workers than
+    # files or than requested helps nothing.
+    if args.jobs <= 1 or len(tasks) <= 1:
+        for record in map(_build_one_record, tasks):
+            records.append(record)
+            print(json.dumps(record))
+    else:
+        with multiprocessing.Pool(min(args.jobs, len(tasks))) as pool:
+            for record in pool.imap(_build_one_record, tasks):
+                records.append(record)
+                print(json.dumps(record))
 
     if args.report:
         with open(args.report, "w") as f:
             for record in records:
                 f.write(json.dumps(record) + "\n")
 
-    return 0
+    return 1 if any(r["status"] == "failed" for r in records) else 0
 
 
 def _status_command(args) -> int:
     source_root = Path(args.source_root)
     cache_root = Path(args.cache_root)
+    globs = args.glob or ["*.mrc"]
 
-    for relpath in _iter_mrc_files(source_root, ["*.mrc"]):
+    for relpath in _iter_mrc_files(source_root, globs):
         ds_id = dataset_id(relpath)
         cache_dir = cache_dir_for(cache_root, ds_id)
         fp = read_fingerprint(cache_dir)
@@ -90,8 +114,20 @@ def _status_command(args) -> int:
         fd = os.open(str(source_root / relpath), os.O_RDONLY)
         try:
             st = os.stat(fd)
-            hdr = parse_header(fd, st.st_size, st.st_mtime_ns)
-            params = Params(**{**fp["params"], "chunk_size": tuple(fp["params"]["chunk_size"])})
+            hdr = parse_header(fd, st.st_size, st.st_mtime_ns, assume_mode0=args.assume_mode0)
+            if hdr.mode0_signedness_is_ambiguous:
+                _logger.warning(
+                    "%s: mode-0 signedness is ambiguous (no IMOD stamp), defaulting to "
+                    "int8; pass --assume-mode0 to override", relpath,
+                )
+            # Validate against the *configured* params, not the fingerprint's
+            # own -- comparing fp["params"] to itself can never report
+            # incompatible.
+            params = Params(
+                chunk_size=tuple(args.chunk_size), downsample="mean",
+                min_axis_size=args.min_axis_size, max_levels=args.max_levels,
+                dtype=hdr.dtype.name, encoding="raw",
+            )
             result = validate(fp, hdr, fd, params)
         finally:
             os.close(fd)
@@ -103,8 +139,9 @@ def _status_command(args) -> int:
 def _prune_command(args) -> int:
     cache_root = Path(args.cache_root)
     source_root = Path(args.source_root)
+    globs = args.glob or ["*.mrc"]
 
-    known_ids = {dataset_id(rel) for rel in _iter_mrc_files(source_root, ["*.mrc"])}
+    known_ids = {dataset_id(rel) for rel in _iter_mrc_files(source_root, globs)}
 
     if cache_root.exists():
         for prefix_dir in cache_root.iterdir():
@@ -131,6 +168,12 @@ def main(argv: list[str] | None = None) -> int:
     build_p.add_argument("--max-block-bytes", type=_parse_size, default=DEFAULT_MAX_BLOCK_BYTES,
                          help="cap on one streamed source block (e.g. 256M); peak RSS "
                               "per worker is roughly 3x this")
+    build_p.add_argument("--assume-mode0", choices=("int8", "uint8"),
+                         help="mode-0 signedness when no IMOD stamp is present")
+    build_p.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1),
+                         help="multiprocessing.Pool over files; the bottleneck is usually "
+                              "storage, so more than a few oversubscribes NFS")
+    build_p.add_argument("--log-level", default="INFO")
     build_p.add_argument("--force", action="store_true")
     build_p.add_argument("--report")
     build_p.set_defaults(func=_build_command)
@@ -138,11 +181,17 @@ def main(argv: list[str] | None = None) -> int:
     status_p = sub.add_parser("status")
     status_p.add_argument("source_root")
     status_p.add_argument("--cache-root", required=True)
+    status_p.add_argument("--glob", action="append")
+    status_p.add_argument("--chunk-size", type=_parse_chunk_size, default=(64, 64, 64))
+    status_p.add_argument("--min-axis-size", type=int, default=32)
+    status_p.add_argument("--max-levels", type=int, default=6)
+    status_p.add_argument("--assume-mode0", choices=("int8", "uint8"))
     status_p.set_defaults(func=_status_command)
 
     prune_p = sub.add_parser("prune")
     prune_p.add_argument("--cache-root", required=True)
     prune_p.add_argument("--source-root", required=True)
+    prune_p.add_argument("--glob", action="append")
     prune_p.set_defaults(func=_prune_command)
 
     args = parser.parse_args(argv)

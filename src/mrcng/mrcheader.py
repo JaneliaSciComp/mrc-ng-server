@@ -163,7 +163,17 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
                 f"count (nx,ny,nz)=({nx},{ny},{nz}); per-axis voxel size would "
                 f"be unreliable (common in image-stack MRC files, e.g. mz=1)"
             )
-        voxel_size = (cella[0] / mx, cella[1] / my, cella[2] / mz)
+        # A single axis's cella can be zero while the others are populated --
+        # common for per-section tilt-series stacks, where z isn't a real
+        # physical sampling. Left uncaught, cella[i]/m == 0.0 for that axis,
+        # and Neuroglancer's precomputed format rejects a zero resolution
+        # outright ("Expected positive finite float"). Default just that axis
+        # to 1 Angstrom, same as the all-zero case, and flag it the same way.
+        voxel_size = tuple(
+            (c / m) if c != 0.0 else 1.0
+            for c, m in zip(cella, (mx, my, mz))
+        )
+        voxel_size_is_default = any(c == 0.0 for c in cella)
 
     return MrcHeader(
         nx=nx, ny=ny, nz=nz, mode=mode,

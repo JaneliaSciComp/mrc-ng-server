@@ -101,6 +101,18 @@ def test_grid_size_matching_sample_count_is_not_flagged_as_default(make_mrc_file
     np.testing.assert_allclose(hdr.voxel_size_angstrom, (2.0, 2.0, 2.0))
 
 
+def test_single_axis_zero_cella_defaults_only_that_axis(make_mrc_file):
+    # Regression: cella[2]==0 while cella[0]/cella[1] are populated (common
+    # for per-section tilt-series stacks, where z isn't a real physical
+    # sampling) fell through to voxel_size = cella / (mx,my,mz), producing a
+    # literal 0.0 Angstrom z voxel size. Neuroglancer's precomputed format
+    # rejects that outright: "Expected positive finite float but received: 0".
+    path = make_mrc_file(shape=(8, 8, 8), mode=1, voxel_size_angstrom=(2.0, 2.0, 0.0))
+    hdr = _parse(path)
+    assert hdr.voxel_size_angstrom == (2.0, 2.0, 1.0)
+    assert hdr.voxel_size_is_default is True
+
+
 def test_zero_cella_falls_back_to_default_voxel_size(make_mrc_file):
     path = make_mrc_file(shape=(4, 4, 4), mode=1, voxel_size_angstrom=(0.0, 0.0, 0.0))
     hdr = _parse(path)

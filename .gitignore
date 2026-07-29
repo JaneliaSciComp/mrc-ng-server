@@ -1,0 +1,14 @@
+/notes/
+.pixi/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.mrc
+.DS_Store
+# pixi environments
+.pixi/*
+!.pixi/config.toml

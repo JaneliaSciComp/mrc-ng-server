@@ -70,3 +70,42 @@ def test_scale0_still_served_when_cache_valid(cached_setup):
     resp = client.get(f"/data/{relpath}/1_1_1/0-8_0-8_0-8")
     assert resp.status_code == 200
     assert len(resp.content) == 8 * 8 * 8 * 2
+
+
+def test_rebuild_over_a_replaced_source_leaves_no_readable_orphan_scale(cached_setup, tmp_path):
+    """Regression: the deeper levels of a previous build survived a rebuild of a
+    smaller source and stayed readable under the *new* valid fingerprint, so a
+    request for a key no longer in info returned the old file's voxels, 200 OK."""
+    client, source_root, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    from tests.conftest import make_mrc
+
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    assert (cache_dir / "4_4_4").is_dir()  # built from the 32^3 source
+
+    time.sleep(0.01)
+    os.remove(source_root / relpath)
+    make_mrc(source_root / relpath, shape=(16, 16, 16), mode=1,
+             fill=lambda z, y, x: np.full_like(x, 222))
+    params = Params(chunk_size=(8, 8, 8), downsample="mean", min_axis_size=8,
+                    max_levels=3, dtype="int16", encoding="raw")
+    build_one(source_root, cache_root, relpath, params)
+
+    assert not (cache_dir / "4_4_4").exists()  # removed by the rebuild
+    keys = [s["key"] for s in client.get(f"/data/{relpath}/info").json()["scales"]]
+    assert keys == ["1_1_1", "2_2_2"]
+    assert client.get(f"/data/{relpath}/4_4_4/0-8_0-8_0-8").status_code == 404
+
+
+def test_scale_key_not_in_fingerprint_404s(cached_setup):
+    """Second half of the same guard: covers caches built before the rebuild
+    fix, where the orphan dir is already on disk."""
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    orphan = cache_dir / "64_64_64"
+    orphan.mkdir()
+    (orphan / "0-8_0-8_0-8").write_bytes(b"\x00" * (8 * 8 * 8 * 2))
+
+    assert client.get(f"/data/{relpath}/64_64_64/0-8_0-8_0-8").status_code == 404

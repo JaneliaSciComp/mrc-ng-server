@@ -178,6 +178,12 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
         if fp is None or validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) != Validity.VALID:
             return Response(status_code=404)  # no valid cache -> nothing above scale 0
 
+        # The fingerprint is authoritative about which scales this build wrote.
+        # A key that is on disk but not in the list is a leftover from an
+        # earlier build of a different source, and its bytes are stale.
+        if scale_key not in fp.get("scales", ()):
+            return Response(status_code=404)
+
     chunk_path = cache_dir / scale_key / chunk_str
     if not chunk_path.is_file():
         return Response(status_code=404)

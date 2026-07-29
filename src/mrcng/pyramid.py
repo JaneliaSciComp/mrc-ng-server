@@ -11,6 +11,7 @@ import enum
 import fcntl
 import json
 import os
+import shutil
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -199,6 +200,15 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
             fp_path = cache_dir / "fingerprint.json"
             if fp_path.exists():
                 fp_path.unlink()
+
+            # Drop every existing scale dir before rebuilding. A previous build
+            # of a differently-shaped source leaves chunk files whose names are
+            # not in the new grid; they survive an overwrite and stay readable
+            # under the *new* valid fingerprint. Only the level dirs go -- the
+            # flock we are holding lives on cache_dir/.lock.
+            for child in cache_dir.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child)
 
             scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), params.min_axis_size, params.max_levels)
             cache_bytes = 0

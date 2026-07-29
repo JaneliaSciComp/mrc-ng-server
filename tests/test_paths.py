@@ -13,6 +13,15 @@ def test_dataset_id_is_deterministic_sha256_prefix():
     assert dataset_id(rel) == dataset_id(rel)
 
 
+@pytest.mark.parametrize("spelling", ["sub//t.mrc", "./sub/t.mrc", "sub/./t.mrc"])
+def test_dataset_id_normalizes_equivalent_spellings(spelling):
+    # Regression: hashing the raw request string meant a proxy or client that
+    # joined URL segments naively (double slash, leading "./") landed on a
+    # different, empty cache entry -- the whole pyramid silently vanished even
+    # though resolve_source serves scale 0 from the same file either way.
+    assert dataset_id(spelling) == dataset_id("sub/t.mrc")
+
+
 def test_cache_dir_uses_two_char_prefix(tmp_path):
     ds_id = "abcdef0123456789"
     result = cache_dir_for(tmp_path, ds_id)

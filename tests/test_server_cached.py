@@ -65,6 +65,28 @@ def test_stale_cache_falls_back_to_single_scale(cached_setup):
     assert chunk_resp.status_code == 404
 
 
+def test_equivalent_path_spellings_share_the_same_cache(tmp_path, make_mrc_file):
+    # Regression: dataset_id used to hash the raw request string, so
+    # "sub//t.mrc" (a double slash a naive URL join can produce) got a
+    # different id than "sub/t.mrc" and its whole pyramid silently vanished,
+    # even though resolve_source serves scale 0 from the same file either way.
+    source_root = tmp_path / "source"; source_root.mkdir()
+    (source_root / "sub").mkdir()
+    cache_root = tmp_path / "cache"; cache_root.mkdir()
+    make_mrc_file(name="source/sub/t.mrc", shape=(32, 32, 32), mode=1)
+
+    params = Params(chunk_size=(8, 8, 8), downsample="mean", min_axis_size=8,
+                    max_levels=3, dtype="int16", encoding="raw")
+    build_one(source_root, cache_root, "sub/t.mrc", params)
+
+    client = TestClient(create_app(Settings(source_root=source_root, cache_root=cache_root,
+                                            chunk_size=(8, 8, 8))))
+    canonical = client.get("/data/sub/t.mrc/info").json()["scales"]
+    double_slash = client.get("/data/sub//t.mrc/info").json()["scales"]
+    assert double_slash == canonical
+    assert len(canonical) > 1
+
+
 def test_scale0_still_served_when_cache_valid(cached_setup):
     client, _, _, relpath = cached_setup
     resp = client.get(f"/data/{relpath}/1_1_1/0-8_0-8_0-8")

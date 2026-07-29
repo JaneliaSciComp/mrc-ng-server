@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 class PathNotAllowed(Exception):
@@ -10,7 +10,14 @@ class PathNotAllowed(Exception):
 
 
 def dataset_id(relpath: str) -> str:
-    return hashlib.sha256(relpath.encode()).hexdigest()[:16]
+    # Normalize before hashing so spellings that resolve to the same file --
+    # "sub//t.mrc", "./sub/t.mrc", "sub/./t.mrc" -- collapse to the same id.
+    # Without this, a client or proxy that joins URL segments naively lands on
+    # a different (empty) cache entry and the whole pyramid silently
+    # disappears, even though resolve_source happily serves scale 0 from the
+    # same file.
+    normalized = PurePosixPath(relpath).as_posix()
+    return hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
 
 def cache_dir_for(cache_root: Path, ds_id: str) -> Path:

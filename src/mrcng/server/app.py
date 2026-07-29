@@ -234,6 +234,24 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
             # earlier build of a different source, and its bytes are stale.
             if scale_key not in fp.get("scales", ()):
                 return Response(status_code=404)
+
+            # Recompute the scale plan from this build's own params (a pure
+            # calculation, no extra I/O -- min_axis_size/max_levels come from
+            # the fingerprint, not the server's current settings, since they
+            # don't invalidate the cache and an older build may have used
+            # different values). Validates the chunk spec against the grid
+            # before touching the filesystem, per sec 9.
+            scales = plan_scales(
+                (hdr.nx, hdr.ny, hdr.nz),
+                fp["params"]["min_axis_size"], fp["params"]["max_levels"],
+            )
+            scale = next((s for s in scales if s.key == scale_key), None)
+            if scale is None:
+                return Response(status_code=404)
+            try:
+                clip_chunk_to_scale(scale, x0, x1, y0, y1, z0, z1, chunk_size=settings.chunk_size)
+            except ValueError:
+                return Response(status_code=404)
     except MrcFormatError as e:
         return _header_error_response(e)
 

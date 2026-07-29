@@ -131,6 +131,24 @@ def test_corrupt_fingerprint_reads_as_no_cache(cached_setup):
     assert client.get(f"/data/{relpath}/2_2_2/0-8_0-8_0-8").status_code == 404
 
 
+def test_cached_chunk_grid_misalignment_404s_before_touching_disk(cached_setup):
+    # Regression: the cached-chunk branch skipped clip_chunk_to_scale entirely
+    # (unlike scale-0), relying only on the file happening not to exist. A
+    # non-grid-aligned request for a real, valid scale key should still 404,
+    # verified against clip_chunk_to_scale's own validation rather than luck.
+    client, _, _, relpath = cached_setup
+    # 2_2_2 has chunk_size (8,8,8); origin 3 is not a multiple of 8.
+    resp = client.get(f"/data/{relpath}/2_2_2/3-11_0-8_0-8")
+    assert resp.status_code == 404
+
+
+def test_cached_chunk_unknown_scale_key_404s(cached_setup):
+    client, _, _, relpath = cached_setup
+    # well-formed scale-key shape, but not a level this build ever produced
+    resp = client.get(f"/data/{relpath}/99_99_99/0-8_0-8_0-8")
+    assert resp.status_code == 404
+
+
 def test_scale_key_not_in_fingerprint_404s(cached_setup):
     """Second half of the same guard: covers caches built before the rebuild
     fix, where the orphan dir is already on disk."""

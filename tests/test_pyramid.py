@@ -152,6 +152,18 @@ def test_skips_valid_cache_unless_forced(source_and_cache):
     assert forced.status == BuildStatus.BUILT
 
 
+def test_fingerprint_records_the_installed_version(source_and_cache):
+    # Regression: GENERATOR_VERSION hardcoded the version number, so bumping
+    # pyproject stamped every new fingerprint with the previous release. It is
+    # the only record of which build wrote a cache entry, so it must not lie.
+    from importlib.metadata import version
+
+    source_root, cache_root, relpath = source_and_cache
+    build_one(source_root, cache_root, relpath, _params())
+    fp = read_fingerprint(cache_dir_for(cache_root, dataset_id(relpath)))
+    assert fp["generator_version"] == f"mrc-pyramid {version('mrc-ng-server')}"
+
+
 def test_concurrent_build_reports_skipped_locked(source_and_cache):
     source_root, cache_root, relpath = source_and_cache
     ds_id = dataset_id(relpath)

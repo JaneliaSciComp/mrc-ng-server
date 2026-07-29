@@ -25,6 +25,7 @@ import os
 import shutil
 import time
 from dataclasses import dataclass, replace
+from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
@@ -41,7 +42,10 @@ from mrcng.reader import read_chunk
 
 _logger = logging.getLogger("mrcng.pyramid")
 
-GENERATOR_VERSION = "mrc-pyramid 0.1.1"
+# Derived from pyproject's version, same as app.MRCNG_VERSION -- hardcoding the
+# number here meant a release bump silently left every new fingerprint stamped
+# with the previous version.
+GENERATOR_VERSION = f"mrc-pyramid {version('mrc-ng-server')}"
 
 # Peak RSS per worker is roughly 3x this: the int16 source block, plus the int32
 # accumulator block_mean allocates over it. Budget accordingly when setting

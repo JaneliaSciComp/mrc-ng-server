@@ -36,6 +36,12 @@ _access_logger = logging.getLogger("mrcng.access")
 _logger = logging.getLogger("mrcng.server")
 
 
+def _source_etag(hdr) -> str:
+    # Scale-0 content is a pure function of the source file's identity, which
+    # is exactly what the fd cache already keys on -- reuse it here.
+    return f'"{hdr.mtime_ns:x}-{hdr.file_size:x}"'
+
+
 def _header_error_response(e: MrcFormatError) -> Response:
     # A data problem an operator needs to see, per spec sec 9 -- name the
     # exception type and its message rather than returning a bare 500.
@@ -133,11 +139,15 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
                 return Response(
                     content=(cache_dir / "info").read_bytes(),
                     media_type="application/json",
-                    headers={"Cache-Control": "no-cache, must-revalidate"},
+                    headers={
+                        "Cache-Control": "no-cache, must-revalidate",
+                        "ETag": f'"{fp["source_header_sha256"][:16]}"',
+                    },
                 )
 
             scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), min_axis_size=32, max_levels=1)
             info = build_info(hdr, scales, chunk_size=settings.chunk_size)
+            etag = _source_etag(hdr)
     except MrcFormatError as e:
         return _header_error_response(e)
 
@@ -145,7 +155,7 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
     return Response(
         content=json.dumps(info),
         media_type="application/json",
-        headers={"Cache-Control": "no-cache, must-revalidate"},
+        headers={"Cache-Control": "no-cache, must-revalidate", "ETag": etag},
     )
 
 
@@ -194,7 +204,14 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
                     content=body,
                     media_type="application/octet-stream",
                     headers={
-                        "Cache-Control": "public, max-age=31536000, immutable",
+                        # Unlike a cached (scale>=1) chunk, this URL bakes in no
+                        # fingerprint or mtime -- the source is mutable at the
+                        # same relpath, so "immutable, 1yr" would have a CDN
+                        # serve year-old voxels after a replace with no way to
+                        # invalidate. Revalidate on every request instead; the
+                        # ETag makes that cheap (304 when unchanged).
+                        "Cache-Control": "no-cache, must-revalidate",
+                        "ETag": _source_etag(hdr),
                         "X-Mrcng-Read-Strategy": choose_strategy(
                             cx0, cx1, hdr.dtype.itemsize, threshold).value,
                     },

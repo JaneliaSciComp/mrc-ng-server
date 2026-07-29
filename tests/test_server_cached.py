@@ -72,6 +72,23 @@ def test_scale0_still_served_when_cache_valid(cached_setup):
     assert len(resp.content) == 8 * 8 * 8 * 2
 
 
+def test_cached_info_has_etag_derived_from_fingerprint(cached_setup):
+    client, _, _, relpath = cached_setup
+    resp = client.get(f"/data/{relpath}/info")
+    assert resp.status_code == 200
+    assert resp.headers["etag"]
+
+
+def test_cached_chunk_keeps_long_immutable_cache_control(cached_setup):
+    # Cached (scale>=1) chunks are content-immutable for a given fingerprint,
+    # unlike scale-0 -- this header is intentional and unchanged by the
+    # scale-0 fix.
+    client, _, _, relpath = cached_setup
+    resp = client.get(f"/data/{relpath}/2_2_2/0-8_0-8_0-8")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
 def test_rebuild_over_a_replaced_source_leaves_no_readable_orphan_scale(cached_setup, tmp_path):
     """Regression: the deeper levels of a previous build survived a rebuild of a
     smaller source and stayed readable under the *new* valid fingerprint, so a

@@ -85,6 +85,21 @@ def test_read_strategy_is_reported_and_tunable(tmp_path, make_mrc_file):
     assert strategy_for(10**9) == "span_wise"
 
 
+def test_scale0_chunk_and_info_have_revalidatable_cache_headers(client):
+    # Regression: scale-0 chunks used "public, max-age=31536000, immutable",
+    # but the URL bakes in no fingerprint or mtime and the source is mutable
+    # at the same relpath -- a CDN would serve year-old voxels after a
+    # replace with no way to invalidate.
+    resp = client.get("/data/tomo.mrc/1_1_1/0-64_0-60_0-40")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache, must-revalidate"
+    assert resp.headers["etag"]
+
+    info_resp = client.get("/data/tomo.mrc/info")
+    assert info_resp.status_code == 200
+    assert info_resp.headers["etag"]
+
+
 def test_scale0_chunk_out_of_grid_404s(client):
     resp = client.get("/data/tomo.mrc/1_1_1/1000-1064_0-60_0-40")
     assert resp.status_code == 404

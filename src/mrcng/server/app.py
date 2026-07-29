@@ -33,6 +33,17 @@ _SCALE_KEY_RE = re.compile(r"^\d+_\d+_\d+$")
 _CHUNK_RE = re.compile(r"^\d+-\d+_\d+-\d+_\d+-\d+$")
 
 _access_logger = logging.getLogger("mrcng.access")
+_logger = logging.getLogger("mrcng.server")
+
+
+def _header_error_response(e: MrcFormatError) -> Response:
+    # A data problem an operator needs to see, per spec sec 9 -- name the
+    # exception type and its message rather than returning a bare 500.
+    return Response(
+        content=json.dumps({"error": type(e).__name__, "detail": str(e)}),
+        media_type="application/json",
+        status_code=422,
+    )
 
 
 def _current_params(settings, hdr) -> Params:
@@ -114,21 +125,21 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
     except PathNotAllowed:
         return Response(status_code=404)
 
-    with fd_cache.open(path) as (fd, hdr):
-        cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
-        if fp is not None and validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) == Validity.VALID:
-            _log_access(relpath, "info", "", True, start)
-            return Response(
-                content=(cache_dir / "info").read_bytes(),
-                media_type="application/json",
-                headers={"Cache-Control": "no-cache, must-revalidate"},
-            )
+    try:
+        with fd_cache.open(path) as (fd, hdr):
+            cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
+            if fp is not None and validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) == Validity.VALID:
+                _log_access(relpath, "info", "", True, start)
+                return Response(
+                    content=(cache_dir / "info").read_bytes(),
+                    media_type="application/json",
+                    headers={"Cache-Control": "no-cache, must-revalidate"},
+                )
 
-        try:
             scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), min_axis_size=32, max_levels=1)
             info = build_info(hdr, scales, chunk_size=settings.chunk_size)
-        except MrcFormatError as e:
-            return Response(content=str(e), status_code=422)
+    except MrcFormatError as e:
+        return _header_error_response(e)
 
     _log_access(relpath, "info", "", False, start)
     return Response(
@@ -150,46 +161,56 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
     if x1 <= x0 or y1 <= y0 or z1 <= z0:
         return Response(status_code=400)
 
-    with fd_cache.open(path) as (fd, hdr):
-        if scale_key == "1_1_1":
-            scale0 = ScaleLevel(key="1_1_1", size=(hdr.nx, hdr.ny, hdr.nz), factors=(1, 1, 1))
-            try:
-                cx0, cx1, cy0, cy1, cz0, cz1 = clip_chunk_to_scale(
-                    scale0, x0, x1, y0, y1, z0, z1, chunk_size=settings.chunk_size,
-                )
-            except ValueError:
-                return Response(status_code=404)
-
-            threshold = settings.read_row_bytes_threshold
-            async with semaphore:
+    try:
+        with fd_cache.open(path) as (fd, hdr):
+            if scale_key == "1_1_1":
+                scale0 = ScaleLevel(key="1_1_1", size=(hdr.nx, hdr.ny, hdr.nz), factors=(1, 1, 1))
                 try:
-                    arr = await asyncio.to_thread(
-                        read_chunk, fd, hdr, cx0, cx1, cy0, cy1, cz0, cz1, threshold,
+                    cx0, cx1, cy0, cy1, cz0, cz1 = clip_chunk_to_scale(
+                        scale0, x0, x1, y0, y1, z0, z1, chunk_size=settings.chunk_size,
                     )
-                except (ChunkOutOfBounds, UnexpectedEOF):
+                except ValueError:
                     return Response(status_code=404)
 
-            body = encode_chunk(arr)
-            _log_access(relpath, scale_key, chunk_str, False, start)
-            return Response(
-                content=body,
-                media_type="application/octet-stream",
-                headers={
-                    "Cache-Control": "public, max-age=31536000, immutable",
-                    "X-Mrcng-Read-Strategy": choose_strategy(
-                        cx0, cx1, hdr.dtype.itemsize, threshold).value,
-                },
-            )
+                threshold = settings.read_row_bytes_threshold
+                async with semaphore:
+                    try:
+                        arr = await asyncio.to_thread(
+                            read_chunk, fd, hdr, cx0, cx1, cy0, cy1, cz0, cz1, threshold,
+                        )
+                    except ChunkOutOfBounds:
+                        return Response(status_code=404)
+                    except UnexpectedEOF as e:
+                        # The file shrank under us between header parse and read --
+                        # a data problem, not an absent tile. Log loudly (sec 9).
+                        _logger.error(
+                            "unexpected EOF reading %s %s/%s: %s", relpath, scale_key, chunk_str, e,
+                        )
+                        return Response(status_code=500)
 
-        cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
-        if fp is None or validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) != Validity.VALID:
-            return Response(status_code=404)  # no valid cache -> nothing above scale 0
+                body = encode_chunk(arr)
+                _log_access(relpath, scale_key, chunk_str, False, start)
+                return Response(
+                    content=body,
+                    media_type="application/octet-stream",
+                    headers={
+                        "Cache-Control": "public, max-age=31536000, immutable",
+                        "X-Mrcng-Read-Strategy": choose_strategy(
+                            cx0, cx1, hdr.dtype.itemsize, threshold).value,
+                    },
+                )
 
-        # The fingerprint is authoritative about which scales this build wrote.
-        # A key that is on disk but not in the list is a leftover from an
-        # earlier build of a different source, and its bytes are stale.
-        if scale_key not in fp.get("scales", ()):
-            return Response(status_code=404)
+            cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
+            if fp is None or validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) != Validity.VALID:
+                return Response(status_code=404)  # no valid cache -> nothing above scale 0
+
+            # The fingerprint is authoritative about which scales this build wrote.
+            # A key that is on disk but not in the list is a leftover from an
+            # earlier build of a different source, and its bytes are stale.
+            if scale_key not in fp.get("scales", ()):
+                return Response(status_code=404)
+    except MrcFormatError as e:
+        return _header_error_response(e)
 
     chunk_path = cache_dir / scale_key / chunk_str
     if not chunk_path.is_file():

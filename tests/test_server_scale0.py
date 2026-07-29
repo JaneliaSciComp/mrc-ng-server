@@ -104,3 +104,56 @@ def test_malformed_chunk_spec_400s(client):
     # matches the route shape (scale key + chunk-name regex) but the range is inverted
     resp = client.get("/data/tomo.mrc/1_1_1/80-0_0-60_0-40")
     assert resp.status_code == 400
+
+
+def test_header_validation_error_returns_422_with_json_body(tmp_path, make_mrc_file):
+    # Regression: parse_header raises inside fd_cache.open(), outside any
+    # handler's try/except, so this used to bubble up as a bare 500.
+    source_root = tmp_path / "s422"; source_root.mkdir()
+    (tmp_path / "c422").mkdir()
+    make_mrc_file(name="s422/permuted.mrc", shape=(8, 8, 8), mode=1, mapc=2, mapr=1, maps=3)
+    settings = Settings(source_root=source_root, cache_root=tmp_path / "c422")
+    client = TestClient(create_app(settings))
+
+    for url in ("/data/permuted.mrc/info", "/data/permuted.mrc/1_1_1/0-8_0-8_0-8"):
+        resp = client.get(url)
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["error"] == "NonStandardAxisOrderError"
+        assert "mapc" in body["detail"]
+
+
+def test_truncated_file_returns_422(tmp_path, make_mrc_file):
+    source_root = tmp_path / "strunc"; source_root.mkdir()
+    (tmp_path / "ctrunc").mkdir()
+    make_mrc_file(name="strunc/t.mrc", shape=(16, 16, 16), mode=1, truncate_bytes=100)
+    settings = Settings(source_root=source_root, cache_root=tmp_path / "ctrunc")
+    client = TestClient(create_app(settings))
+
+    resp = client.get("/data/t.mrc/info")
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "TruncatedFileError"
+
+
+def test_unexpected_eof_mid_read_returns_500_and_logs(tmp_path, make_mrc_file, monkeypatch, caplog):
+    # Regression: UnexpectedEOF was lumped in with ChunkOutOfBounds -> 404, so a
+    # file that shrank under the server looked like an ordinary empty tile.
+    import logging
+    from mrcng.reader import UnexpectedEOF
+    from mrcng.server import app as app_module
+
+    source_root = tmp_path / "seof"; source_root.mkdir()
+    (tmp_path / "ceof").mkdir()
+    make_mrc_file(name="seof/t.mrc", shape=(8, 8, 8), mode=1)
+    settings = Settings(source_root=source_root, cache_root=tmp_path / "ceof")
+    client = TestClient(create_app(settings))
+
+    def boom(*args, **kwargs):
+        raise UnexpectedEOF("simulated truncation mid-read")
+
+    monkeypatch.setattr(app_module, "read_chunk", boom)
+
+    with caplog.at_level(logging.ERROR, logger="mrcng.server"):
+        resp = client.get("/data/t.mrc/1_1_1/0-8_0-8_0-8")
+    assert resp.status_code == 500
+    assert any(r.name == "mrcng.server" and r.levelno == logging.ERROR for r in caplog.records)

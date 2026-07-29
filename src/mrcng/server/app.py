@@ -36,6 +36,15 @@ def _open_header(settings, relpath: str):
         raise
 
 
+def get_app() -> FastAPI:
+    """uvicorn factory entry point: `uvicorn mrcng.server.app:get_app --factory`.
+    Reads Settings from the MRCNG_* environment at call time (not import
+    time), so importing this module for tests never requires source_root/
+    cache_root to be set."""
+    from mrcng.server.config import Settings
+    return create_app(Settings())
+
+
 def create_app(settings) -> FastAPI:
     app = FastAPI()
     app.add_middleware(

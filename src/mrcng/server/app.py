@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
+from importlib.metadata import version
 from pathlib import Path
 
 from fastapi import FastAPI, Response
@@ -28,7 +29,7 @@ from mrcng.precomputed import (
 from mrcng.reader import read_chunk, choose_strategy, ChunkOutOfBounds, UnexpectedEOF
 from mrcng.server.fdcache import FdCache
 
-MRCNG_VERSION = "0.1.0"
+MRCNG_VERSION = version("mrc-ng-server")
 
 _SCALE_KEY_RE = re.compile(r"^\d+_\d+_\d+$")
 _CHUNK_RE = re.compile(r"^\d+-\d+_\d+-\d+_\d+-\d+$")

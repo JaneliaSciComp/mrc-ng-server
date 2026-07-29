@@ -111,25 +111,24 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
     start = time.monotonic()
     try:
         path = resolve_source(settings.source_root, relpath)
-        hdr = fd_cache.get(path)
-        fd = fd_cache.fd_for(path)
     except PathNotAllowed:
         return Response(status_code=404)
 
-    cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
-    if fp is not None and validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) == Validity.VALID:
-        _log_access(relpath, "info", "", True, start)
-        return Response(
-            content=(cache_dir / "info").read_bytes(),
-            media_type="application/json",
-            headers={"Cache-Control": "no-cache, must-revalidate"},
-        )
+    with fd_cache.open(path) as (fd, hdr):
+        cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
+        if fp is not None and validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) == Validity.VALID:
+            _log_access(relpath, "info", "", True, start)
+            return Response(
+                content=(cache_dir / "info").read_bytes(),
+                media_type="application/json",
+                headers={"Cache-Control": "no-cache, must-revalidate"},
+            )
 
-    try:
-        scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), min_axis_size=32, max_levels=1)
-        info = build_info(hdr, scales, chunk_size=settings.chunk_size)
-    except MrcFormatError as e:
-        return Response(content=str(e), status_code=422)
+        try:
+            scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), min_axis_size=32, max_levels=1)
+            info = build_info(hdr, scales, chunk_size=settings.chunk_size)
+        except MrcFormatError as e:
+            return Response(content=str(e), status_code=422)
 
     _log_access(relpath, "info", "", False, start)
     return Response(
@@ -144,8 +143,6 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
     start = time.monotonic()
     try:
         path = resolve_source(settings.source_root, relpath)
-        hdr = fd_cache.get(path)
-        fd = fd_cache.fd_for(path)
     except PathNotAllowed:
         return Response(status_code=404)
 
@@ -153,32 +150,33 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
     if x1 <= x0 or y1 <= y0 or z1 <= z0:
         return Response(status_code=400)
 
-    if scale_key == "1_1_1":
-        scale0 = ScaleLevel(key="1_1_1", size=(hdr.nx, hdr.ny, hdr.nz), factors=(1, 1, 1))
-        try:
-            cx0, cx1, cy0, cy1, cz0, cz1 = clip_chunk_to_scale(
-                scale0, x0, x1, y0, y1, z0, z1, chunk_size=settings.chunk_size,
-            )
-        except ValueError:
-            return Response(status_code=404)
-
-        async with semaphore:
+    with fd_cache.open(path) as (fd, hdr):
+        if scale_key == "1_1_1":
+            scale0 = ScaleLevel(key="1_1_1", size=(hdr.nx, hdr.ny, hdr.nz), factors=(1, 1, 1))
             try:
-                arr = await asyncio.to_thread(read_chunk, fd, hdr, cx0, cx1, cy0, cy1, cz0, cz1)
-            except (ChunkOutOfBounds, UnexpectedEOF):
+                cx0, cx1, cy0, cy1, cz0, cz1 = clip_chunk_to_scale(
+                    scale0, x0, x1, y0, y1, z0, z1, chunk_size=settings.chunk_size,
+                )
+            except ValueError:
                 return Response(status_code=404)
 
-        body = encode_chunk(arr)
-        _log_access(relpath, scale_key, chunk_str, False, start)
-        return Response(
-            content=body,
-            media_type="application/octet-stream",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
-        )
+            async with semaphore:
+                try:
+                    arr = await asyncio.to_thread(read_chunk, fd, hdr, cx0, cx1, cy0, cy1, cz0, cz1)
+                except (ChunkOutOfBounds, UnexpectedEOF):
+                    return Response(status_code=404)
 
-    cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
-    if fp is None or validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) != Validity.VALID:
-        return Response(status_code=404)  # no valid cache -> nothing above scale 0
+            body = encode_chunk(arr)
+            _log_access(relpath, scale_key, chunk_str, False, start)
+            return Response(
+                content=body,
+                media_type="application/octet-stream",
+                headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            )
+
+        cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
+        if fp is None or validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) != Validity.VALID:
+            return Response(status_code=404)  # no valid cache -> nothing above scale 0
 
     chunk_path = cache_dir / scale_key / chunk_str
     if not chunk_path.is_file():

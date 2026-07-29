@@ -18,9 +18,19 @@ _MODE_DTYPES = {
     1: np.dtype("<i2"),
     2: np.dtype("<f4"),
     6: np.dtype("<u2"),
-    12: np.dtype("<f2"),
 }
-_UNSUPPORTED_MODES = {3, 4}
+# mode 12 (float16) is a recognised MRC mode -- kept in _VALID_MODES so the
+# byte-order sanity check still treats it as a plausible little-endian mode
+# field -- but it isn't in _MODE_DTYPES: the Neuroglancer precomputed protocol
+# only allows uint8/int8/uint16/int16/uint32/int32/uint64/float32 as
+# data_type, so serving float16 verbatim would produce an info file
+# Neuroglancer can't render. Reject at open rather than guess a conversion.
+_UNSUPPORTED_MODE_REASONS = {
+    3: "complex data",
+    4: "complex data",
+    12: "float16 is not an allowed Neuroglancer precomputed data_type",
+}
+_UNSUPPORTED_MODES = set(_UNSUPPORTED_MODE_REASONS)
 _VALID_MODES = {0, 1, 2, 3, 4, 6, 12}
 
 
@@ -78,7 +88,7 @@ class MrcHeader:
 
 def _dtype_for_mode(mode: int, raw: bytes, assume_mode0: str | None) -> np.dtype:
     if mode in _UNSUPPORTED_MODES:
-        raise UnsupportedModeError(f"mode {mode} is unsupported (complex data)")
+        raise UnsupportedModeError(f"mode {mode} is unsupported ({_UNSUPPORTED_MODE_REASONS[mode]})")
     if mode != 0:
         if mode not in _MODE_DTYPES:
             raise UnsupportedModeError(f"mode {mode} is not a recognised MRC mode")

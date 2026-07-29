@@ -75,6 +75,15 @@ def test_nxstart_nystart_nzstart_are_recorded(make_mrc_file):
         ) == (3, -5, 100)
 
 
+def test_mode12_float16_rejected(make_mrc_file):
+    # Regression: mode 12 (float16) parsed fine and info advertised
+    # "data_type": "float16", which Neuroglancer precomputed doesn't allow
+    # (uint8/int8/uint16/int16/uint32/int32/uint64/float32 only).
+    path = make_mrc_file(shape=(8, 8, 8), mode=12)
+    with pytest.raises(UnsupportedModeError, match="float16"):
+        _parse(path)
+
+
 def test_mismatched_grid_size_raises(make_mrc_file):
     # Common in image-stack MRC files: mz=1 regardless of nz. Silently using it
     # would divide the whole cell depth into a single voxel, making the z

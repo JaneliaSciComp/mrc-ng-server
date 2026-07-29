@@ -38,7 +38,7 @@ def test_plan_scales_respects_max_levels():
 def test_build_info_converts_angstrom_to_nanometres():
     class FakeHdr:
         nx, ny, nz = 100, 100, 100
-        dtype = np.dtype(np.int16)
+        dtype = served_dtype = np.dtype(np.int16)
         voxel_size_angstrom = (6.8, 6.8, 6.8)
         voxel_size_is_default = False
 
@@ -58,7 +58,7 @@ def test_build_info_surfaces_voxel_size_is_default():
     # size in info with nothing marking it as a fallback.
     class FakeHdr:
         nx, ny, nz = 8, 8, 8
-        dtype = np.dtype(np.int16)
+        dtype = served_dtype = np.dtype(np.int16)
         voxel_size_angstrom = (1.0, 1.0, 1.0)
         voxel_size_is_default = True
 

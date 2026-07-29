@@ -107,7 +107,9 @@ def _build_level_from_source(fd, hdr, cache_dir: Path, level0, level1, chunk_siz
     fx, fy, fz = level1.factors  # level0's factors are (1,1,1), so cumulative == per-step here
     cx, cy, cz = chunk_size
     sx, sy, sz = level1.size
-    itemsize = hdr.dtype.itemsize
+    # served_dtype: max_block_bytes budgets the in-memory block read_chunk
+    # returns, which for mode 12 is float32-wide, not the file's float16.
+    itemsize = hdr.served_dtype.itemsize
     cache_bytes = 0
 
     for z0 in range(0, sz, cz):
@@ -247,7 +249,7 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
         # chosen build setting -- a source tree can mix int16 tomograms with
         # float32 ones, so params.dtype must reflect *this* file, never a
         # value the caller guessed for the whole tree.
-        params = replace(params, dtype=hdr.dtype.name)
+        params = replace(params, dtype=hdr.served_dtype.name)
 
         existing = read_fingerprint(cache_dir)
         if existing is not None and not force and validate(existing, hdr, fd, params) == Validity.VALID:
@@ -287,7 +289,7 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
                 levels_built += 1
                 for i in range(2, len(scales)):
                     cache_bytes += _build_level_from_previous(
-                        cache_dir, scales[i - 1], scales[i], params.chunk_size, hdr.dtype,
+                        cache_dir, scales[i - 1], scales[i], params.chunk_size, hdr.served_dtype,
                     )
                     levels_built += 1
 

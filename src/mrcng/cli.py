@@ -138,7 +138,7 @@ def _status_command(args) -> int:
             params = Params(
                 chunk_size=tuple(args.chunk_size), downsample="mean",
                 min_axis_size=args.min_axis_size, max_levels=args.max_levels,
-                dtype=hdr.dtype.name, encoding="raw",
+                dtype=hdr.served_dtype.name, encoding="raw",
             )
             result = validate(fp, hdr, fd, params)
         finally:

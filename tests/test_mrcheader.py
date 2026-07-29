@@ -75,13 +75,24 @@ def test_nxstart_nystart_nzstart_are_recorded(make_mrc_file):
         ) == (3, -5, 100)
 
 
-def test_mode12_float16_rejected(make_mrc_file):
-    # Regression: mode 12 (float16) parsed fine and info advertised
-    # "data_type": "float16", which Neuroglancer precomputed doesn't allow
-    # (uint8/int8/uint16/int16/uint32/int32/uint64/float32 only).
+def test_mode12_float16_is_read_as_float16_and_served_as_float32(make_mrc_file):
+    # Regression: mode 12 was rejected outright, so half-precision tomograms
+    # (AreTomo/Warp write them to halve file size) 422'd on /info. Neuroglancer
+    # allows only uint8/int8/uint16/int16/uint32/int32/uint64/float32 as
+    # data_type -- and has no float16 in its DataType enum at all -- so the
+    # served dtype must widen while the on-disk dtype stays float16, which is
+    # what every byte offset is computed from.
     path = make_mrc_file(shape=(8, 8, 8), mode=12)
-    with pytest.raises(UnsupportedModeError, match="float16"):
-        _parse(path)
+    hdr = _parse(path)
+    assert hdr.dtype == np.dtype("<f2")
+    assert hdr.dtype.itemsize == 2
+    assert hdr.served_dtype == np.dtype("<f4")
+
+
+def test_non_float16_modes_serve_their_on_disk_dtype(make_mrc_file):
+    for mode in (0, 1, 2, 6):
+        hdr = _parse(make_mrc_file(name=f"m{mode}.mrc", shape=(8, 8, 8), mode=mode))
+        assert hdr.served_dtype == hdr.dtype, mode
 
 
 def test_mismatched_grid_size_raises(make_mrc_file):

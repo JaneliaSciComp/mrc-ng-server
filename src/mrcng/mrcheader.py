@@ -18,17 +18,17 @@ _MODE_DTYPES = {
     1: np.dtype("<i2"),
     2: np.dtype("<f4"),
     6: np.dtype("<u2"),
+    12: np.dtype("<f2"),
 }
-# mode 12 (float16) is a recognised MRC mode -- kept in _VALID_MODES so the
-# byte-order sanity check still treats it as a plausible little-endian mode
-# field -- but it isn't in _MODE_DTYPES: the Neuroglancer precomputed protocol
-# only allows uint8/int8/uint16/int16/uint32/int32/uint64/float32 as
-# data_type, so serving float16 verbatim would produce an info file
-# Neuroglancer can't render. Reject at open rather than guess a conversion.
+# float16 is a real MRC mode (AreTomo/Warp write half-precision tomograms to
+# halve file size) but Neuroglancer has no float16 at all -- not in the
+# precomputed data_type list, and no FLOAT16 in its DataType enum -- so it is
+# widened to float32 on the way out. See MrcHeader.served_dtype.
+_WIDEN_ON_SERVE = {np.dtype("<f2"): np.dtype("<f4")}
+
 _UNSUPPORTED_MODE_REASONS = {
     3: "complex data",
     4: "complex data",
-    12: "float16 is not an allowed Neuroglancer precomputed data_type",
 }
 _UNSUPPORTED_MODES = set(_UNSUPPORTED_MODE_REASONS)
 _VALID_MODES = {0, 1, 2, 3, 4, 6, 12}
@@ -85,6 +85,18 @@ class MrcHeader:
     @property
     def shape_zyx(self) -> tuple[int, int, int]:
         return (self.nz, self.ny, self.nx)
+
+    @property
+    def served_dtype(self) -> np.dtype:
+        """The dtype Neuroglancer is told about and chunk bodies are encoded in.
+
+        Differs from `dtype` (the on-disk layout, which every byte offset and
+        itemsize calculation must keep using) only for mode 12: float16 widens
+        to float32. The widening is exact -- every float16 is representable in
+        float32 -- and costs 2x on the wire, which is the only way to serve
+        these files at all since Neuroglancer cannot render float16.
+        """
+        return _WIDEN_ON_SERVE.get(self.dtype, self.dtype)
 
 
 def _dtype_for_mode(mode: int, raw: bytes, assume_mode0: str | None) -> tuple[np.dtype, bool]:

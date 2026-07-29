@@ -85,6 +85,41 @@ def test_read_strategy_is_reported_and_tunable(tmp_path, make_mrc_file):
     assert strategy_for(10**9) == "span_wise"
 
 
+def test_mode12_float16_serves_widened_float32(tmp_path, make_mrc_file):
+    # Regression: a half-precision (mode 12) tomogram 422'd on /info with
+    # UnsupportedModeError, so the whole file was unviewable. Neuroglancer has
+    # no float16, so info must advertise float32 and the chunk body must be
+    # float32 bytes -- 4 per voxel, not the file's 2 -- with the values intact.
+    import numpy as np
+    from mrcng.server.config import Settings
+    from mrcng.server.app import create_app
+    from fastapi.testclient import TestClient
+
+    source_root = tmp_path / "src12"; source_root.mkdir()
+    (tmp_path / "cache12").mkdir()
+    # values exactly representable in float16 so the check is about widening,
+    # not about float16 rounding
+    make_mrc_file(name="src12/half.mrc", shape=(8, 6, 4), mode=12,
+                  fill=lambda zz, yy, xx: (xx + 16 * yy + 256 * zz) * 0.5)
+
+    settings = Settings(source_root=source_root, cache_root=tmp_path / "cache12")
+    client12 = TestClient(create_app(settings))
+
+    info = client12.get("/data/half.mrc/info").json()
+    assert info["data_type"] == "float32"
+    assert info["scales"][0]["size"] == [8, 6, 4]
+
+    resp = client12.get("/data/half.mrc/1_1_1/0-8_0-6_0-4")
+    assert resp.status_code == 200
+    assert len(resp.content) == 8 * 6 * 4 * 4
+    got = np.frombuffer(resp.content, dtype="<f4").reshape(4, 6, 8)
+
+    import mrcfile
+    with mrcfile.open(source_root / "half.mrc", permissive=True) as mf:
+        assert mf.data.dtype == np.dtype("<f2")
+        np.testing.assert_array_equal(got, mf.data.astype("<f4"))
+
+
 def test_scale0_chunk_and_info_have_revalidatable_cache_headers(client):
     # Regression: scale-0 chunks used "public, max-age=31536000, immutable",
     # but the URL bakes in no fingerprint or mtime and the source is mutable

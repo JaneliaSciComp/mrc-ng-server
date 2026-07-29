@@ -50,7 +50,7 @@ def build_info(hdr, scales: list[ScaleLevel], chunk_size: tuple[int, int, int], 
     return {
         "@type": "neuroglancer_multiscale_volume",
         "type": "image",
-        "data_type": str(hdr.dtype.name) if hasattr(hdr.dtype, "name") else str(hdr.dtype),
+        "data_type": hdr.served_dtype.name,
         "num_channels": 1,
         "scales": scale_entries,
         # Not part of the precomputed spec; Neuroglancer ignores unknown

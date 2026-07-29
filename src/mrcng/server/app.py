@@ -58,7 +58,7 @@ def _header_error_response(e: MrcFormatError) -> Response:
 def _current_params(settings, hdr) -> Params:
     return Params(
         chunk_size=tuple(settings.chunk_size), downsample="mean",
-        min_axis_size=32, max_levels=6, dtype=hdr.dtype.name, encoding="raw",
+        min_axis_size=32, max_levels=6, dtype=hdr.served_dtype.name, encoding="raw",
     )
 
 

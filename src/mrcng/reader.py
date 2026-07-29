@@ -52,7 +52,11 @@ def read_chunk(
 
     itemsize = hdr.dtype.itemsize
     strategy = choose_strategy(x0, x1, itemsize, row_bytes_threshold)
-    out = np.empty((z1 - z0, y1 - y0, x1 - x0), dtype=hdr.dtype)
+    # served_dtype, not dtype: for mode 12 the assignments below upcast each
+    # float16 row into this float32 buffer as they land, so nothing downstream
+    # (encode_chunk, downsample) ever sees a dtype Neuroglancer can't render.
+    # Offsets and itemsize above stay on the on-disk dtype.
+    out = np.empty((z1 - z0, y1 - y0, x1 - x0), dtype=hdr.served_dtype)
 
     if strategy is ReadStrategy.ROW_WISE:
         row_len = x1 - x0

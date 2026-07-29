@@ -41,7 +41,7 @@ from mrcng.reader import read_chunk
 
 _logger = logging.getLogger("mrcng.pyramid")
 
-GENERATOR_VERSION = "mrc-pyramid 0.1.0"
+GENERATOR_VERSION = "mrc-pyramid 0.1.1"
 
 # Peak RSS per worker is roughly 3x this: the int16 source block, plus the int32
 # accumulator block_mean allocates over it. Budget accordingly when setting

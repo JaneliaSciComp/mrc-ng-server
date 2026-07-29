@@ -13,12 +13,13 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from mrcng.fingerprint import Params, Validity, read_fingerprint, validate as validate_fingerprint
+from mrcng.fingerprint import Params, Validity
 from mrcng.mrcheader import MrcFormatError
 from mrcng.paths import resolve_source, PathNotAllowed, dataset_id, cache_dir_for
 from mrcng.precomputed import (
@@ -59,9 +60,8 @@ def _current_params(settings, hdr) -> Params:
     )
 
 
-def _cache_dir_and_fingerprint(settings, hdr, relpath: str):
-    cache_dir = cache_dir_for(settings.cache_root, dataset_id(relpath))
-    return cache_dir, read_fingerprint(cache_dir)
+def _cache_dir_for(settings, relpath: str) -> Path:
+    return cache_dir_for(settings.cache_root, dataset_id(relpath))
 
 
 def _log_access(relpath: str, scale_key: str, chunk: str, cache_hit: bool, start: float) -> None:
@@ -132,9 +132,11 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
         return Response(status_code=404)
 
     try:
-        with fd_cache.open(path) as (fd, hdr):
-            cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
-            if fp is not None and validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) == Validity.VALID:
+        with fd_cache.open(path) as handle:
+            hdr = handle.hdr
+            cache_dir = _cache_dir_for(settings, relpath)
+            validity, fp = handle.validity_for(cache_dir, _current_params(settings, hdr))
+            if validity == Validity.VALID:
                 _log_access(relpath, "info", "", True, start)
                 return Response(
                     content=(cache_dir / "info").read_bytes(),
@@ -172,7 +174,8 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
         return Response(status_code=400)
 
     try:
-        with fd_cache.open(path) as (fd, hdr):
+        with fd_cache.open(path) as handle:
+            fd, hdr = handle.fd, handle.hdr
             if scale_key == "1_1_1":
                 scale0 = ScaleLevel(key="1_1_1", size=(hdr.nx, hdr.ny, hdr.nz), factors=(1, 1, 1))
                 try:
@@ -217,8 +220,9 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
                     },
                 )
 
-            cache_dir, fp = _cache_dir_and_fingerprint(settings, hdr, relpath)
-            if fp is None or validate_fingerprint(fp, hdr, fd, _current_params(settings, hdr)) != Validity.VALID:
+            cache_dir = _cache_dir_for(settings, relpath)
+            validity, fp = handle.validity_for(cache_dir, _current_params(settings, hdr))
+            if fp is None or validity != Validity.VALID:
                 return Response(status_code=404)  # no valid cache -> nothing above scale 0
 
             # The fingerprint is authoritative about which scales this build wrote.

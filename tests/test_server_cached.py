@@ -143,3 +143,54 @@ def test_scale_key_not_in_fingerprint_404s(cached_setup):
     (orphan / "0-8_0-8_0-8").write_bytes(b"\x00" * (8 * 8 * 8 * 2))
 
     assert client.get(f"/data/{relpath}/64_64_64/0-8_0-8_0-8").status_code == 404
+
+
+def test_repeated_requests_reuse_the_memoized_validity(cached_setup, monkeypatch):
+    # The expensive part -- reading fingerprint.json and hashing the header --
+    # should run once per fingerprint version, not once per request.
+    client, _, _, relpath = cached_setup
+    from mrcng.server import fdcache as fdcache_module
+
+    calls = {"read": 0, "validate": 0}
+    real_read, real_validate = fdcache_module.read_fingerprint, fdcache_module.validate
+
+    def counting_read(cache_dir):
+        calls["read"] += 1
+        return real_read(cache_dir)
+
+    def counting_validate(*args, **kwargs):
+        calls["validate"] += 1
+        return real_validate(*args, **kwargs)
+
+    monkeypatch.setattr(fdcache_module, "read_fingerprint", counting_read)
+    monkeypatch.setattr(fdcache_module, "validate", counting_validate)
+
+    for _ in range(5):
+        assert client.get(f"/data/{relpath}/info").status_code == 200
+        assert client.get(f"/data/{relpath}/2_2_2/0-8_0-8_0-8").status_code == 200
+
+    assert calls["read"] == 1
+    assert calls["validate"] == 1
+
+
+def test_a_build_completing_is_visible_without_a_new_request_needing_eviction(tmp_path, make_mrc_file):
+    # Regression risk if validity were memoized against the *source* key alone:
+    # the source file never changes when a build completes, so a naive memo
+    # keyed only on (path, size, mtime_ns) would keep serving "no cache"
+    # forever, until this fd-cache entry happened to get evicted. Keying on
+    # fingerprint.json's own stat picks the build up on the very next request.
+    source_root = tmp_path / "source"; source_root.mkdir()
+    cache_root = tmp_path / "cache"; cache_root.mkdir()
+    relpath = "tomo.mrc"
+    make_mrc_file(name=f"source/{relpath}", shape=(32, 32, 32), mode=1)
+
+    settings = Settings(source_root=source_root, cache_root=cache_root, chunk_size=(8, 8, 8))
+    client = TestClient(create_app(settings))
+
+    assert len(client.get(f"/data/{relpath}/info").json()["scales"]) == 1
+
+    params = Params(chunk_size=(8, 8, 8), downsample="mean", min_axis_size=8,
+                     max_levels=3, dtype="int16", encoding="raw")
+    build_one(source_root, cache_root, relpath, params)
+
+    assert len(client.get(f"/data/{relpath}/info").json()["scales"]) > 1

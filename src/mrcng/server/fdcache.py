@@ -16,17 +16,51 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
 
+from mrcng.fingerprint import read_fingerprint, validate
 from mrcng.mrcheader import parse_header
 
 
 class _Entry:
-    __slots__ = ("fd", "hdr", "refs", "evicted")
+    __slots__ = ("fd", "hdr", "refs", "evicted", "validity_key", "validity", "validity_fp")
 
     def __init__(self, fd: int, hdr):
         self.fd = fd
         self.hdr = hdr
         self.refs = 0
         self.evicted = False
+        # Fingerprint-validity memo. Keyed by fingerprint.json's own
+        # (size, mtime_ns), NOT by this entry's source key -- a build that
+        # completes while the source file is untouched must be picked up on
+        # the next request, not wait for this entry to be evicted.
+        self.validity_key = "__unset__"
+        self.validity = None
+        self.validity_fp = None
+
+
+class Handle:
+    """What open() yields. Unpacks as (fd, hdr) for the common case; also
+    exposes validity_for() for the fingerprint-validity memo."""
+    __slots__ = ("_cache", "_entry")
+
+    def __init__(self, cache: "FdCache", entry: _Entry):
+        self._cache = cache
+        self._entry = entry
+
+    @property
+    def fd(self) -> int:
+        return self._entry.fd
+
+    @property
+    def hdr(self):
+        return self._entry.hdr
+
+    def __iter__(self):
+        return iter((self._entry.fd, self._entry.hdr))
+
+    def validity_for(self, cache_dir: Path, params):
+        """(Validity, fingerprint dict) for this source's cache entry, or
+        (None, None) if there is no fingerprint.json."""
+        return self._cache._validity_for(self._entry, cache_dir, params)
 
 
 class FdCache:
@@ -41,11 +75,12 @@ class FdCache:
 
     @contextmanager
     def open(self, path: Path):
-        """Yield (fd, header). The fd stays open for the whole body even if the
-        entry is evicted meanwhile, so it is safe to hand to a worker thread."""
+        """Yield a Handle (unpacks as (fd, hdr)). The fd stays open for the
+        whole body even if the entry is evicted meanwhile, so it is safe to
+        hand to a worker thread."""
         entry = self._acquire(path)
         try:
-            yield entry.fd, entry.hdr
+            yield Handle(self, entry)
         finally:
             self._release(entry)
 
@@ -85,6 +120,32 @@ class FdCache:
             entry.refs -= 1
             if entry.refs == 0 and entry.evicted:
                 os.close(entry.fd)
+
+    def _validity_for(self, entry: _Entry, cache_dir: Path, params):
+        # A stat call on fingerprint.json here, versus a full read + JSON
+        # parse + sha256-over-the-header on every request when nothing about
+        # the cache has changed.
+        try:
+            st = os.stat(Path(cache_dir) / "fingerprint.json")
+            fp_key = (st.st_size, st.st_mtime_ns)
+        except FileNotFoundError:
+            fp_key = None
+
+        with self._lock:
+            if entry.validity_key == fp_key:
+                return entry.validity, entry.validity_fp
+
+        if fp_key is None:
+            computed_validity, fp = None, None
+        else:
+            fp = read_fingerprint(cache_dir)
+            computed_validity = validate(fp, entry.hdr, entry.fd, params) if fp is not None else None
+
+        with self._lock:
+            entry.validity_key = fp_key
+            entry.validity = computed_validity
+            entry.validity_fp = fp
+        return computed_validity, fp
 
     def _evict_if_needed(self):
         """Caller holds the lock."""

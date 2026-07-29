@@ -5,7 +5,6 @@ offset(x, y, z) = data_offset + (z*ny*nx + y*nx + x) * itemsize
 """
 from __future__ import annotations
 
-import os
 import struct
 from dataclasses import dataclass
 
@@ -143,12 +142,8 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
 
 
 def _pread_header(fd: int) -> bytes:
-    chunks = []
-    got = 0
-    while got < HEADER_SIZE:
-        chunk = os.pread(fd, HEADER_SIZE - got, got)
-        if not chunk:
-            raise TruncatedFileError("file shorter than the 1024-byte MRC header")
-        chunks.append(chunk)
-        got += len(chunk)
-    return b"".join(chunks)
+    from mrcng.reader import pread_exact, UnexpectedEOF
+    try:
+        return pread_exact(fd, HEADER_SIZE, 0)
+    except UnexpectedEOF as e:
+        raise TruncatedFileError("file shorter than the 1024-byte MRC header") from e

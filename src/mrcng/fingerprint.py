@@ -76,9 +76,13 @@ def read_fingerprint(cache_dir: Path) -> dict | None:
     path = Path(cache_dir) / "fingerprint.json"
     try:
         with open(path) as f:
-            return json.load(f)
+            data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return None
+    # Valid JSON that isn't an object (e.g. a build crashed mid-write and left
+    # `null` or `[]`) is corrupt, not a fingerprint. Ground rule: missing,
+    # stale, incompatible, or corrupt must all read as "no cache".
+    return data if isinstance(data, dict) else None
 
 
 def validate(fp: dict, hdr, fd: int, current_params: Params) -> Validity:

@@ -1,6 +1,8 @@
 import os
 import time
 
+import pytest
+
 from mrcng.mrcheader import parse_header
 from mrcng.fingerprint import (
     Params, Validity, build_fingerprint,
@@ -42,6 +44,17 @@ def test_write_then_read_roundtrip(tmp_path, make_mrc_file):
 
 def test_read_fingerprint_missing_returns_none(tmp_path):
     assert read_fingerprint(tmp_path / "nope") is None
+
+
+@pytest.mark.parametrize("contents", ["null", "[]", '"a string"', "42"])
+def test_read_fingerprint_non_object_json_returns_none(tmp_path, contents):
+    # Regression: valid JSON that isn't a dict (e.g. a build crashed mid-write)
+    # used to be returned as-is, and validate()'s fp.get(...) then raised
+    # AttributeError instead of reading as "no cache".
+    cache_dir = tmp_path / "entry"
+    cache_dir.mkdir()
+    (cache_dir / "fingerprint.json").write_text(contents)
+    assert read_fingerprint(cache_dir) is None
 
 
 def test_validate_valid_when_everything_matches(tmp_path, make_mrc_file):

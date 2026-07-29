@@ -97,6 +97,23 @@ def test_rebuild_over_a_replaced_source_leaves_no_readable_orphan_scale(cached_s
     assert client.get(f"/data/{relpath}/4_4_4/0-8_0-8_0-8").status_code == 404
 
 
+def test_corrupt_fingerprint_reads_as_no_cache(cached_setup):
+    # Regression: valid JSON that isn't a dict made validate()'s fp.get(...)
+    # raise AttributeError -> 500, instead of reading as "no cache" like a
+    # missing or stale fingerprint.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    (cache_dir / "fingerprint.json").write_text("[]")
+
+    resp = client.get(f"/data/{relpath}/info")
+    assert resp.status_code == 200
+    assert len(resp.json()["scales"]) == 1
+
+    assert client.get(f"/data/{relpath}/2_2_2/0-8_0-8_0-8").status_code == 404
+
+
 def test_scale_key_not_in_fingerprint_404s(cached_setup):
     """Second half of the same guard: covers caches built before the rebuild
     fix, where the orphan dir is already on disk."""

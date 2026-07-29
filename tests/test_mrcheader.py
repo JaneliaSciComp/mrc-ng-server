@@ -66,6 +66,15 @@ def test_truncated_file_raises(make_mrc_file):
         _parse(path)
 
 
+def test_nxstart_nystart_nzstart_are_recorded(make_mrc_file):
+    path = make_mrc_file(shape=(8, 8, 8), mode=1, nstart=(3, -5, 100))
+    hdr = _parse(path)
+    with mrcfile.open(path, permissive=True) as mf:
+        assert (hdr.nxstart, hdr.nystart, hdr.nzstart) == (
+            mf.header.nxstart, mf.header.nystart, mf.header.nzstart,
+        ) == (3, -5, 100)
+
+
 def test_zero_cella_falls_back_to_default_voxel_size(make_mrc_file):
     path = make_mrc_file(shape=(4, 4, 4), mode=1, voxel_size_angstrom=(0.0, 0.0, 0.0))
     hdr = _parse(path)

@@ -53,6 +53,11 @@ def build_info(hdr, scales: list[ScaleLevel], chunk_size: tuple[int, int, int], 
         "data_type": str(hdr.dtype.name) if hasattr(hdr.dtype, "name") else str(hdr.dtype),
         "num_channels": 1,
         "scales": scale_entries,
+        # Not part of the precomputed spec; Neuroglancer ignores unknown
+        # top-level keys. Surfaces the sec 2 fallback so a zero-cella file
+        # doesn't silently advertise a made-up 0.1nm voxel size with nothing
+        # marking it as a guess.
+        "voxel_size_is_default": hdr.voxel_size_is_default,
     }
 
 

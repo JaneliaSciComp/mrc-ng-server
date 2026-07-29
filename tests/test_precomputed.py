@@ -40,15 +40,31 @@ def test_build_info_converts_angstrom_to_nanometres():
         nx, ny, nz = 100, 100, 100
         dtype = np.dtype(np.int16)
         voxel_size_angstrom = (6.8, 6.8, 6.8)
+        voxel_size_is_default = False
 
     scales = plan_scales((100, 100, 100), min_axis_size=32, max_levels=2)
     info = build_info(FakeHdr(), scales, chunk_size=(64, 64, 64))
     assert info["@type"] == "neuroglancer_multiscale_volume"
     assert info["data_type"] == "int16"
+    assert info["voxel_size_is_default"] is False
     assert info["scales"][0]["resolution"] == pytest.approx([0.68, 0.68, 0.68])
     level1_factor = scales[1].factors
     expected_res = [0.68 * f for f in level1_factor]
     assert info["scales"][1]["resolution"] == pytest.approx(expected_res)
+
+
+def test_build_info_surfaces_voxel_size_is_default():
+    # Regression: a zero-cella file silently advertised a made-up 0.1nm voxel
+    # size in info with nothing marking it as a fallback.
+    class FakeHdr:
+        nx, ny, nz = 8, 8, 8
+        dtype = np.dtype(np.int16)
+        voxel_size_angstrom = (1.0, 1.0, 1.0)
+        voxel_size_is_default = True
+
+    scales = plan_scales((8, 8, 8), min_axis_size=32, max_levels=1)
+    info = build_info(FakeHdr(), scales, chunk_size=(64, 64, 64))
+    assert info["voxel_size_is_default"] is True
 
 
 def test_chunk_name_roundtrip():

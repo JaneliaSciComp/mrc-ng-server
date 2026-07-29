@@ -50,6 +50,9 @@ class MrcHeader:
     ny: int
     nz: int
     mode: int
+    nxstart: int
+    nystart: int
+    nzstart: int
     mx: int
     my: int
     mz: int
@@ -104,6 +107,7 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
     if nx <= 0 or ny <= 0 or nz <= 0:
         raise MrcFormatError(f"non-positive dimensions: nx={nx}, ny={ny}, nz={nz}")
 
+    nxstart, nystart, nzstart = struct.unpack_from("<3i", raw, 16)
     mx, my, mz = struct.unpack_from("<3i", raw, 28)
     cella = struct.unpack_from("<3f", raw, 40)
     mapc, mapr, maps = struct.unpack_from("<3i", raw, 64)
@@ -132,6 +136,7 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
 
     return MrcHeader(
         nx=nx, ny=ny, nz=nz, mode=mode,
+        nxstart=nxstart, nystart=nystart, nzstart=nzstart,
         mx=mx, my=my, mz=mz, nsymbt=nsymbt,
         mapc=mapc, mapr=mapr, maps=maps,
         voxel_size_angstrom=voxel_size,

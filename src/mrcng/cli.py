@@ -59,7 +59,8 @@ def _build_command(args) -> int:
                 "relpath": result.relpath, "dataset_id": result.dataset_id,
                 "status": result.status.value, "source_bytes": result.source_bytes,
                 "cache_bytes": result.cache_bytes, "levels_built": result.levels_built,
-                "duration_s": result.duration_s, "error": None,
+                "duration_s": result.duration_s,
+                "voxel_size_is_default": result.voxel_size_is_default, "error": None,
             }
         except Exception as e:
             record = {"relpath": relpath, "status": "failed", "error": str(e)}

@@ -18,16 +18,18 @@ def make_mrc(
     imod_flags=None,  # None, "signed", or "unsigned" -- only meaningful for mode 0
     fill=None,  # callable(zz, yy, xx) -> value, or None for zeros
     truncate_bytes=0,
+    nstart=(0, 0, 0),  # nxstart, nystart, nzstart
+    grid_size=None,  # (mx, my, mz); defaults to shape when None
 ):
     nx, ny, nz = shape
     dtype = MODE_DTYPE[mode]
-    mx, my, mz = nx, ny, nz
+    mx, my, mz = grid_size if grid_size is not None else (nx, ny, nz)
     cella = tuple(v * m for v, m in zip(voxel_size_angstrom, (mx, my, mz)))
 
     header = bytearray(HEADER_SIZE)
     struct.pack_into("<3i", header, 0, nx, ny, nz)
     struct.pack_into("<i", header, 12, mode)
-    struct.pack_into("<3i", header, 16, 0, 0, 0)  # nxstart/nystart/nzstart
+    struct.pack_into("<3i", header, 16, *nstart)
     struct.pack_into("<3i", header, 28, mx, my, mz)
     struct.pack_into("<3f", header, 40, *cella)
     struct.pack_into("<3f", header, 52, 90.0, 90.0, 90.0)  # cellb

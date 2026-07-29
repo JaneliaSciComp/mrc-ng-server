@@ -23,6 +23,27 @@ def test_build_writes_report_jsonl(tmp_path, make_mrc_file):
     record = json.loads(lines[0])
     assert record["relpath"] == "a.mrc"
     assert record["status"] == "built"
+    assert record["voxel_size_is_default"] is False
+
+
+def test_build_report_flags_default_voxel_size(tmp_path, make_mrc_file):
+    # Regression: a zero-cella file built without any indication in the report
+    # that its voxel size is a made-up (1,1,1) fallback, not read from the file.
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1,
+                  voxel_size_angstrom=(0.0, 0.0, 0.0))
+    cache_root = tmp_path / "cache"
+    report_path = tmp_path / "report.jsonl"
+
+    rc = main([
+        "build", str(source_root), "--cache-root", str(cache_root),
+        "--chunk-size", "8,8,8", "--min-axis-size", "8", "--max-levels", "3",
+        "--report", str(report_path),
+    ])
+    assert rc == 0
+    record = json.loads(report_path.read_text().strip())
+    assert record["voxel_size_is_default"] is True
 
 
 def test_status_reports_missing_and_valid(tmp_path, make_mrc_file, capsys):

@@ -51,6 +51,7 @@ class BuildResult:
     cache_bytes: int = 0
     levels_built: int = 0
     duration_s: float = 0.0
+    voxel_size_is_default: bool = False
 
 
 def _chunk_grid(size, chunk_size):
@@ -231,7 +232,8 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
 
         existing = read_fingerprint(cache_dir)
         if existing is not None and not force and validate(existing, hdr, fd, params) == Validity.VALID:
-            return BuildResult(relpath, ds_id, BuildStatus.SKIPPED_VALID, source_bytes=hdr.file_size)
+            return BuildResult(relpath, ds_id, BuildStatus.SKIPPED_VALID, source_bytes=hdr.file_size,
+                               voxel_size_is_default=hdr.voxel_size_is_default)
 
         cache_dir.mkdir(parents=True, exist_ok=True)
         lock_fd = os.open(str(cache_dir / ".lock"), os.O_CREAT | os.O_RDWR)
@@ -239,7 +241,8 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                return BuildResult(relpath, ds_id, BuildStatus.SKIPPED_LOCKED, source_bytes=hdr.file_size)
+                return BuildResult(relpath, ds_id, BuildStatus.SKIPPED_LOCKED, source_bytes=hdr.file_size,
+                                   voxel_size_is_default=hdr.voxel_size_is_default)
 
             fp_path = cache_dir / "fingerprint.json"
             if fp_path.exists():
@@ -286,6 +289,7 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
                 relpath, ds_id, BuildStatus.BUILT,
                 source_bytes=hdr.file_size, cache_bytes=cache_bytes,
                 levels_built=levels_built, duration_s=time.monotonic() - start,
+                voxel_size_is_default=hdr.voxel_size_is_default,
             )
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)

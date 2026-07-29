@@ -73,24 +73,27 @@ def clip_chunk_to_scale(
     chunk_size: tuple[int, int, int] | None = None,
 ) -> tuple[int, int, int, int, int, int]:
     sx, sy, sz = scale.size
-    cx1_raw, cy1_raw, cz1_raw = min(x1, sx), min(y1, sy), min(z1, sz)
 
     if chunk_size is not None:
+        # Neuroglancer requests the already-clipped extent for edge chunks
+        # (e.g. "0-64_0-64_0-40" for a volume with z-size 40), so the
+        # requested x1/y1/z1 must equal the grid cell clipped to the volume
+        # -- never the unclipped chunk_size width, and never padded.
         gx, gy, gz = chunk_size
         if x0 % gx != 0 or y0 % gy != 0 or z0 % gz != 0:
             raise ValueError(f"chunk origin not grid-aligned to {chunk_size}: {(x0, y0, z0)}")
-        if x1 != x0 + gx or y1 != y0 + gy or z1 != z0 + gz:
+        expected = (min(x0 + gx, sx), min(y0 + gy, sy), min(z0 + gz, sz))
+        if (x1, y1, z1) != expected:
             raise ValueError(
-                f"chunk extent {(x0, x1, y0, y1, z0, z1)} is not exactly one grid cell of {chunk_size}"
+                f"chunk extent {(x0, x1, y0, y1, z0, z1)} does not match the grid-clipped "
+                f"extent {(x0, expected[0], y0, expected[1], z0, expected[2])} for scale size {scale.size}"
             )
+        return x0, x1, y0, y1, z0, z1
 
-    cx0, cy0, cz0 = x0, y0, z0
-    cx1, cy1, cz1 = cx1_raw, cy1_raw, cz1_raw
-
-    if cx1 <= cx0 or cy1 <= cy0 or cz1 <= cz0:
+    cx1, cy1, cz1 = min(x1, sx), min(y1, sy), min(z1, sz)
+    if cx1 <= x0 or cy1 <= y0 or cz1 <= z0:
         raise ValueError(f"chunk request entirely out of bounds for scale size {scale.size}")
-
-    return cx0, cx1, cy0, cy1, cz0, cz1
+    return x0, cx1, y0, cy1, z0, cz1
 
 
 def encode_chunk(arr: np.ndarray) -> bytes:

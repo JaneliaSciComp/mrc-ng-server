@@ -13,7 +13,7 @@ There are two parts:
   otherwise the server advertises a single-resolution volume and never
   downsamples or writes anything on the request path.
 
-See `docs/superpowers/specs/2026-07-28-mrc-neuroglancer-design.md` for the
+See [docs/superpowers/specs/2026-07-28-mrc-neuroglancer-design.md](https://github.com/JaneliaSciComp/mrc-ng-server/blob/main/docs/superpowers/specs/2026-07-28-mrc-neuroglancer-design.md) for the
 full design.
 
 ## Install

@@ -27,6 +27,7 @@ from mrcng.precomputed import (
     plan_scales, build_info, parse_chunk_name, clip_chunk_to_scale, encode_chunk, ScaleLevel,
 )
 from mrcng.reader import read_chunk, choose_strategy, ChunkOutOfBounds, UnexpectedEOF
+from mrcng.server.browse import create_browse_router
 from mrcng.server.fdcache import FdCache
 
 MRCNG_VERSION = version("mrc-ng-server")
@@ -102,6 +103,7 @@ def create_app(settings) -> FastAPI:
         allow_methods=["GET"],
         allow_headers=["*"],
     )
+    app.include_router(create_browse_router(settings))
 
     @app.get("/healthz")
     def healthz():

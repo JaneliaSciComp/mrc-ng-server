@@ -1,0 +1,38 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# mrc-ng-server deploys into the SAME namespace as the ai-cryoet portal so it
+# can reuse catalog-data-pvc (read-only data) and share mrc-cache-pvc with the
+# scanner. The namespace itself is created by the ai-cryoet deployment, so it is
+# NOT declared here — just targeted.
+namespace: ai-cryoet
+
+resources:
+  - ../../base
+
+# Non-sensitive config for the server. Copy config.env.example to config.env and
+# edit before deploying. config.env is gitignored and must not be committed.
+configMapGenerator:
+  - name: mrcng-config
+    envs:
+      - config.env
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+# ReadWriteMany requires the shared cephfs class on this OpenShift/OCS cluster
+# (the default RBD class is RWO-only). Same pin the ai-cryoet PVCs use.
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+      name: mrc-cache-pvc
+    patch: |-
+      - op: add
+        path: /spec/storageClassName
+        value: ocs-storagecluster-cephfs
+
+# Pin to the version built by the `v*.*.*` git tag (the metadata-action strips
+# the leading `v`, so git tag `v0.1.1` publishes image tag `0.1.1`).
+images:
+  - name: ghcr.io/janeliascicomp/mrc-ng-server
+    newTag: "0.1.1"

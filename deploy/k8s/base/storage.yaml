@@ -1,0 +1,21 @@
+# Shared Neuroglancer pyramid cache.
+#
+# Written by the ai-cryoet scanner CronJob (`mrc-pyramid build` after each scan)
+# and read by the mrc-ng-server pods. Two different pods mount it, so it needs a
+# ReadWriteMany access mode — the same cephfs pattern the catalog-db and
+# thumbnails volumes use in ai-cryoet. The storage class is cluster-specific and
+# pinned in the production overlay (ocs-storagecluster-cephfs).
+#
+# The read-only DATA volume (catalog-data-pvc, backed by the NFS filer) is NOT
+# declared here: mrc-ng-server deploys into the ai-cryoet namespace and reuses
+# that PVC by name, so there is a single binding to the NFS PV.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mrc-cache-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi

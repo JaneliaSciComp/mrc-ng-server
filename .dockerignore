@@ -1,0 +1,29 @@
+# Pixi-resolved envs (rebuilt inside the image)
+.pixi
+
+# Python caches and test artifacts
+**/__pycache__
+.pytest_cache
+*.egg-info
+
+# Local pyramid caches / data — never bake into an image
+*.report.jsonl
+
+# VCS / IDE / Claude scratch
+.git
+.gitignore
+.gitattributes
+.github
+.claude
+.devcontainer
+.vscode
+.idea
+
+# Docs and tests aren't needed at runtime
+docs
+teach
+tests
+
+# OS junk
+.DS_Store
+Thumbs.db

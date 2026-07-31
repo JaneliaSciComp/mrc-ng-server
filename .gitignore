@@ -14,3 +14,4 @@ deploy/k8s/overlays/production/config.env
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+teach/

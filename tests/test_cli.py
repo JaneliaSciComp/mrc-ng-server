@@ -199,6 +199,46 @@ def test_build_assume_mode0_flag_reaches_the_header_parser(tmp_path, make_mrc_fi
     assert fp["params"]["dtype"] == "uint8"
 
 
+def test_build_from_file_builds_only_listed(tmp_path, make_mrc_file):
+    """--from-file builds exactly the listed relpaths, not every *.mrc in the tree.
+
+    Comments (#) and blank lines are ignored, and no implicit *.mrc glob is
+    added — so a stray sibling .mrc (a gain reference, say) is left unbuilt.
+    """
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    make_mrc_file(name="source/keep.mrc", shape=(16, 16, 16), mode=1)
+    make_mrc_file(name="source/skip.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"
+    list_file = tmp_path / "list.txt"
+    list_file.write_text("keep.mrc\n# skip.mrc is deliberately not listed\n\n")
+
+    rc = main(["build", str(source_root), "--cache-root", str(cache_root),
+               "--chunk-size", "8,8,8", "--from-file", str(list_file)])
+    assert rc == 0
+
+    from mrcng.paths import dataset_id, cache_dir_for
+    assert cache_dir_for(cache_root, dataset_id("keep.mrc")).exists()
+    assert not cache_dir_for(cache_root, dataset_id("skip.mrc")).exists()
+
+
+def test_build_from_file_skips_missing_and_out_of_tree(tmp_path, make_mrc_file):
+    """Entries that don't resolve to a file under source_root are skipped, not fatal."""
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"
+    list_file = tmp_path / "list.txt"
+    list_file.write_text("a.mrc\nnope.mrc\n../outside.mrc\n")  # real, missing, escape
+
+    rc = main(["build", str(source_root), "--cache-root", str(cache_root),
+               "--chunk-size", "8,8,8", "--from-file", str(list_file)])
+    assert rc == 0  # the two bad entries are skipped; the one real file builds
+
+    from mrcng.paths import dataset_id, cache_dir_for
+    assert cache_dir_for(cache_root, dataset_id("a.mrc")).exists()
+
+
 def test_status_warns_on_ambiguous_mode0_signedness(tmp_path, make_mrc_file, caplog):
     import logging
     source_root = tmp_path / "source"

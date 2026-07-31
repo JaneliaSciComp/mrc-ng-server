@@ -23,7 +23,47 @@ TLS terminates at the OpenShift **Route** (`k8s/base/route.yaml`, edge); the pod
 serves plain HTTP on :8000. The Route host is what the portal's `MRCNG_BASE_URL`
 must point at: `https://<route-host>/data`.
 
-## Build the image
+## Release (build + push the image)
+
+Pushing a `v*.*.*` git tag is the release trigger: the `Build Docker Image`
+workflow runs the tests, then builds `deploy/Dockerfile` and pushes it to
+`ghcr.io/janeliascicomp/mrc-ng-server` with semver tags (e.g. `0.1.2`, `0.1`,
+`0`, `latest`). The leading `v` is stripped, so `v0.1.2` publishes image tag
+`0.1.2`.
+
+Steps to cut release `v0.1.2`:
+
+1. **Bump `version` in `pyproject.toml`** to `0.1.2`. Nothing enforces that this
+   matches the tag, so do it by hand first. It's what `importlib.metadata`
+   reports at `/healthz` and in `GENERATOR_VERSION`; the image tag k8s pulls
+   comes from the git tag, not here. No relock is needed — the project's own
+   version isn't recorded in `pixi.lock`, so `pixi install --locked` still
+   passes unchanged.
+
+   ```bash
+   # edit pyproject.toml:  version = "0.1.2"
+   git add pyproject.toml
+   git commit -m "Bump version to 0.1.2"
+   ```
+
+2. **Tag the commit and push the tag** — this fires the build:
+
+   ```bash
+   git tag v0.1.2
+   git push origin v0.1.2
+   ```
+
+That same tag is also the ref [ai-cryoet](https://github.com/JaneliaSciComp/ai-cryoet)'s
+`mrc-ng-server` git dependency should pin to (its scanner needs the
+`mrc-pyramid build --from-file` option), so one tag serves both the image and
+the dependency.
+
+(To skip the manual bump and derive `version` from the tag automatically, switch
+the build to the `hatch-vcs` plugin; note the Docker build excludes `.git`, so
+you'd pass the version in as a build-arg rather than have hatch-vcs read git
+history.)
+
+Manual build (no CI, e.g. local testing):
 
 ```bash
 docker build -f deploy/Dockerfile -t ghcr.io/janeliascicomp/mrc-ng-server:<tag> .

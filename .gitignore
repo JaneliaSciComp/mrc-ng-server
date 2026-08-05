@@ -9,8 +9,6 @@ build/
 dist/
 *.mrc
 .DS_Store
-# k8s deploy config with real values (copy from config.env.example)
-deploy/k8s/overlays/production/config.env
 # pixi environments
 .pixi/*
 !.pixi/config.toml

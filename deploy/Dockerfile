@@ -29,6 +29,12 @@ COPY --from=deps /app /app
 # denied" unless /app is group-writable. Mirror the ai-cryoet images.
 RUN chgrp -R 0 /app && chmod -R g=u /app
 
+# That arbitrary UID also has HOME=/, which isn't writable, so `pixi run` at
+# startup crashes creating its rattler/uv cache under $HOME/.cache. Point HOME at
+# /app (already group-writable above) so the cache lands in a writable, persisted
+# location instead of requiring every deployment to override HOME.
+ENV HOME=/app
+
 # Runtime config is supplied by the deployment, not baked into the image, so
 # this stays a generic service. The server requires two paths at start:
 #   MRCNG_SOURCE_ROOT -- root of the MRC tree; must match the mountPath of the

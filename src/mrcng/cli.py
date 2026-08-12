@@ -227,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     build_p = sub.add_parser("build")
-    _add_source_root_arg(build_p)
+    _add_source_root_arg(build_p, flag=True)
     _add_cache_root_arg(build_p)
     build_p.add_argument("--glob", action="append")
     build_p.add_argument(

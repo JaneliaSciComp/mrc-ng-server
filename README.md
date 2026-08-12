@@ -54,13 +54,13 @@ the environment).
 ## Building the cache
 
 ```bash
-pixi run build-cache /path/to/tomograms --cache-root /path/to/cache
+pixi run build-cache --source-root /path/to/tomograms --cache-root /path/to/cache
 ```
 
 Extra arguments pass straight through to `mrc-pyramid build`:
 
 ```bash
-pixi run build-cache /path/to/tomograms --cache-root /path/to/cache \
+pixi run build-cache --source-root /path/to/tomograms --cache-root /path/to/cache \
     --glob '*.mrc' --glob '*.rec' --jobs 4 \
     --chunk-size 64,64,64 --min-axis-size 32 --max-levels 6 \
     --report report.jsonl

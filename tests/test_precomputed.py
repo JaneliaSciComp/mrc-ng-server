@@ -41,6 +41,7 @@ def test_build_info_converts_angstrom_to_nanometres():
         dtype = served_dtype = np.dtype(np.int16)
         voxel_size_angstrom = (6.8, 6.8, 6.8)
         voxel_size_is_default = False
+        is_image_stack = False
 
     scales = plan_scales((100, 100, 100), min_axis_size=32, max_levels=2)
     info = build_info(FakeHdr(), scales, chunk_size=(64, 64, 64))
@@ -61,6 +62,7 @@ def test_build_info_surfaces_voxel_size_is_default():
         dtype = served_dtype = np.dtype(np.int16)
         voxel_size_angstrom = (1.0, 1.0, 1.0)
         voxel_size_is_default = True
+        is_image_stack = False
 
     scales = plan_scales((8, 8, 8), min_axis_size=32, max_levels=1)
     info = build_info(FakeHdr(), scales, chunk_size=(64, 64, 64))
@@ -117,3 +119,39 @@ def test_encode_chunk_rejects_non_contiguous():
     arr = np.zeros((4, 4, 4), dtype="<i2").T  # transposed -> not C-contiguous
     with pytest.raises(ValueError):
         encode_chunk(arr)
+
+
+def test_plan_scales_pins_z_for_image_stacks():
+    # A tilt series must never bin z: level 1 of a 55-tilt stack would average
+    # tilt pairs taken ~2 degrees apart into one plane.
+    scales = plan_scales((4096, 4096, 55), min_axis_size=32, max_levels=6, downsample_z=False)
+    assert [lvl.size[2] for lvl in scales] == [55] * len(scales)
+    assert [lvl.factors[2] for lvl in scales] == [1] * len(scales)
+    assert scales[1].key == "2_2_1"
+    # x/y still bin normally.
+    assert scales[1].size == (2048, 2048, 55)
+
+
+def test_plan_scales_still_bins_z_by_default():
+    # Same shape, downsample_z left at its default -- the old behaviour, which
+    # is still what a tomogram wants.
+    scales = plan_scales((4096, 4096, 55), min_axis_size=32, max_levels=6)
+    assert scales[1].key == "2_2_2"
+    assert scales[1].size == (2048, 2048, 28)
+
+
+def test_build_info_surfaces_is_image_stack():
+    class FakeHdr:
+        nx, ny, nz = 4096, 4096, 55
+        dtype = served_dtype = np.dtype(np.float32)
+        voxel_size_angstrom = (1.516, 1.516, 10.0)
+        voxel_size_is_default = False
+        is_image_stack = True
+
+    scales = plan_scales((4096, 4096, 55), min_axis_size=32, max_levels=2, downsample_z=False)
+    info = build_info(FakeHdr(), scales, chunk_size=(64, 64, 64))
+    assert info["is_image_stack"] is True
+    # z is one unit per tilt, x/y keep the real pixel size.
+    assert info["scales"][0]["resolution"] == pytest.approx([0.1516, 0.1516, 1.0])
+    # z resolution does not grow down the pyramid, because z is never binned.
+    assert info["scales"][1]["resolution"] == pytest.approx([0.3032, 0.3032, 1.0])

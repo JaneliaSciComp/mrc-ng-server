@@ -282,7 +282,8 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
                 if child.is_dir():
                     shutil.rmtree(child)
 
-            scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), params.min_axis_size, params.max_levels)
+            scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), params.min_axis_size, params.max_levels,
+                                 downsample_z=not hdr.is_image_stack)
             cache_bytes = 0
             levels_built = 0
 

@@ -1,3 +1,4 @@
+import json
 import os
 import fcntl
 
@@ -200,3 +201,40 @@ def test_killed_build_leaves_no_fingerprint_and_is_rebuilt(source_and_cache, mon
     monkeypatch.setattr(pyramid_module, "write_fingerprint", original)
     result = build_one(source_root, cache_root, relpath, _params())
     assert result.status == BuildStatus.BUILT
+
+
+def test_image_stack_pyramid_never_bins_z(tmp_path, make_mrc_file):
+    """End-to-end: the built cache must keep every slice at every level.
+
+    Guards the wiring, not plan_scales (unit-tested separately): if the build
+    stopped passing downsample_z it would write 2_2_2 chunks holding the mean
+    of adjacent tilts, and the server -- which derives downsample_z from the
+    same header -- would then advertise 2_2_1 and never find them.
+    """
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+
+    # nz=8 against 256 wide is stack-shaped (8 < 0.05 * 256); each slice is a
+    # distinct constant so an averaged z would be immediately visible.
+    make_mrc_file(name="source/stack.mrc", shape=(256, 256, 8), mode=1,
+                  fill=lambda zz, yy, xx: (zz + 1) * 100)
+    result = build_one(source_root, cache_root, "stack.mrc", _params(chunk_size=(64, 64, 64),
+                                                                     min_axis_size=32))
+    assert result.status == BuildStatus.BUILT
+
+    cache_dir = cache_dir_for(cache_root, dataset_id("stack.mrc"))
+    fp = read_fingerprint(cache_dir)
+    assert fp["scales"] == ["2_2_1", "4_4_1"]
+
+    info = json.loads((cache_dir / "info").read_text())
+    assert info["is_image_stack"] is True
+    for scale in info["scales"]:
+        assert scale["size"][2] == 8, scale["key"]
+        assert scale["resolution"][2] == 1.0, scale["key"]
+
+    # Level 1 holds all 8 original slice values, unaveraged.
+    chunk = np.frombuffer((cache_dir / "2_2_1" / "0-64_0-64_0-8").read_bytes(),
+                          dtype="<i2").reshape(8, 64, 64)
+    assert [int(chunk[z, 0, 0]) for z in range(8)] == [(z + 1) * 100 for z in range(8)]

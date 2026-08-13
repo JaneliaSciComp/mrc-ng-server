@@ -175,3 +175,68 @@ def test_non_mode0_is_never_ambiguous(make_mrc_file):
     path = make_mrc_file(shape=(4, 4, 4), mode=1)
     hdr = _parse(path)
     assert hdr.mode0_signedness_is_ambiguous is False
+
+
+def test_image_stack_z_voxel_is_one_nanometre_per_slice(make_mrc_file):
+    # Regression: Relion writes a tilt series with mz=nz and cella_z =
+    # nz * pixel_x, so cella_z/mz handed back the x/y pixel size (0.1516nm for
+    # the file this came from). 55 tilts then spanned 8.3nm against a 621nm
+    # image -- a 75x squash that made the tilt axis unnavigable in
+    # Neuroglancer. z is an index here; advertise one unit per slice.
+    path = make_mrc_file(shape=(1024, 1024, 40), mode=2,
+                         voxel_size_angstrom=(1.516, 1.516, 1.516))
+    hdr = _parse(path)
+    assert hdr.is_image_stack is True
+    np.testing.assert_allclose(hdr.voxel_size_angstrom, (1.516, 1.516, 10.0))
+    assert hdr.voxel_size_is_default is False
+
+
+def test_volume_keeps_its_real_z_voxel_size(make_mrc_file):
+    # Same writer convention, tomogram proportions -- z is a real spatial axis
+    # and must be left alone.
+    path = make_mrc_file(shape=(843, 1187, 375), mode=2,
+                         voxel_size_angstrom=(10.0, 10.0, 10.0))
+    hdr = _parse(path)
+    assert hdr.is_image_stack is False
+    np.testing.assert_allclose(hdr.voxel_size_angstrom, (10.0, 10.0, 10.0))
+
+
+def test_image_stack_is_exempt_from_the_grid_size_guard(make_mrc_file):
+    # IMOD's convention: mz=1 regardless of nz, with a dummy cella_z. 110 of
+    # the 2871 image stacks in the deployment corpus write this and used to be
+    # refused outright by NonStandardGridSizeError. x/y still come from
+    # cella/m, which is correct per spec for any m.
+    path = make_mrc_file(shape=(4746, 3370, 29), mode=2,
+                         voxel_size_angstrom=(2.5, 2.5, 1.0), grid_size=(1, 1, 1))
+    hdr = _parse(path)
+    assert hdr.is_image_stack is True
+    np.testing.assert_allclose(hdr.voxel_size_angstrom, (2.5, 2.5, 10.0))
+
+
+def test_image_stack_zero_cella_z_is_not_flagged_as_default(make_mrc_file):
+    # cella_z == 0 is expected for a stack and says nothing about x/y, which
+    # are the only axes read from cella there.
+    path = make_mrc_file(shape=(1024, 1024, 40), mode=2,
+                         voxel_size_angstrom=(1.5, 1.5, 0.0))
+    hdr = _parse(path)
+    np.testing.assert_allclose(hdr.voxel_size_angstrom, (1.5, 1.5, 10.0))
+    assert hdr.voxel_size_is_default is False
+
+
+def test_small_format_stack_is_a_known_misclassification(make_mrc_file):
+    """Documents a limitation, not desired behaviour.
+
+    A 250x150x55 synthetic tilt series (ratio 0.22) is classified as a volume.
+    Two such files exist in the deployment corpus. Do NOT try to fix this by
+    lowering STACK_ASPECT_RATIO: cross-checked against the directory
+    convention, true 2D files span ratio 0.0001-0.2200 and true 3D files span
+    0.1276-1.4120, so the classes overlap and no threshold separates them.
+    Only an explicit per-path rule can. This test exists so that anyone who
+    does retune the constant sees the tradeoff spelled out instead of
+    believing they fixed it.
+    """
+    path = make_mrc_file(shape=(250, 150, 55), mode=2,
+                         voxel_size_angstrom=(8.0, 8.0, 8.0))
+    hdr = _parse(path)
+    assert hdr.is_image_stack is False
+    np.testing.assert_allclose(hdr.voxel_size_angstrom, (8.0, 8.0, 8.0))

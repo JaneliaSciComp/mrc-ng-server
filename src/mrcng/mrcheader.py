@@ -26,6 +26,22 @@ _MODE_DTYPES = {
 # widened to float32 on the way out. See MrcHeader.served_dtype.
 _WIDEN_ON_SERVE = {np.dtype("<f2"): np.dtype("<f4")}
 
+# An image stack (tilt series, gain reference) has a z axis that is a slice
+# index, not a spatial sampling -- so cella_z carries no physical meaning and
+# adjacent "slices" must never be averaged together. MRC has no reliable flag
+# saying which kind of file this is: ispg is 0 on every file in the Janelia
+# cryoET corpus, tomograms included, and writers agree on nothing else either
+# (Relion stamps mz=nz with cella_z = nz * pixel_x, IMOD stamps mz=1 with a
+# dummy cella_z, and only some stacks carry an extended header). Shape is the
+# only signal that actually separates them.
+STACK_ASPECT_RATIO = 0.05
+
+# z voxel size advertised for an image stack: one slice == one nanometre, so
+# one Neuroglancer unit == one slice. The precomputed format has no way to say
+# "this axis is an index" and rejects a zero or absent resolution, so a round
+# 1nm is the closest honest thing available.
+STACK_Z_VOXEL_ANGSTROM = 10.0
+
 _UNSUPPORTED_MODE_REASONS = {
     3: "complex data",
     4: "complex data",
@@ -58,6 +74,22 @@ class TruncatedFileError(MrcFormatError):
     pass
 
 
+def _is_image_stack(nx: int, ny: int, nz: int) -> bool:
+    """Whether z is a slice index rather than a spatial axis. See STACK_ASPECT_RATIO."""
+    # ponytail: aspect-ratio heuristic, because no header field can answer this
+    # (see STACK_ASPECT_RATIO). KNOWN WRONG on 2 of the 3648 MRCs in the
+    # deployment corpus, and not fixable by tuning the constant: cross-checked
+    # against the path convention, true 2D files span ratio 0.0001-0.2200 and
+    # true 3D files span 0.1276-1.4120, so the two classes *overlap* and no
+    # single threshold separates them. The misses are small-format synthetic
+    # tilt series (250x150x55, ratio 0.22) whose 55 tilts are a large fraction
+    # of a small frame; real 4k-detector tilt series sit near 0.006-0.013 and
+    # classify fine. 0.05 was chosen to sit between the bulk of both clusters.
+    # Upgrade path: an explicit per-path setting, which is the only thing that
+    # can classify a small-format stack correctly.
+    return nz < STACK_ASPECT_RATIO * max(nx, ny)
+
+
 @dataclass(frozen=True)
 class MrcHeader:
     nx: int
@@ -85,6 +117,17 @@ class MrcHeader:
     @property
     def shape_zyx(self) -> tuple[int, int, int]:
         return (self.nz, self.ny, self.nx)
+
+    @property
+    def is_image_stack(self) -> bool:
+        """z is a slice/tilt index, not a spatial axis.
+
+        Drives three things that must all agree, or a cached pyramid stops
+        matching the served scale plan: the advertised z resolution
+        (STACK_Z_VOXEL_ANGSTROM), whether plan_scales is allowed to bin z, and
+        whether a (mx,my,mz) != (nx,ny,nz) grid is an error or expected.
+        """
+        return _is_image_stack(self.nx, self.ny, self.nz)
 
     @property
     def served_dtype(self) -> np.dtype:
@@ -158,22 +201,29 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
             f"file is {file_size} bytes but header implies at least {required} bytes"
         )
 
+    is_stack = _is_image_stack(nx, ny, nz)
+
     voxel_size_is_default = False
     if mx == 0 or my == 0 or mz == 0 or all(c == 0.0 for c in cella):
         voxel_size = (1.0, 1.0, 1.0)
         voxel_size_is_default = True
     else:
-        if (mx, my, mz) != (nx, ny, nz):
+        if not is_stack and (mx, my, mz) != (nx, ny, nz):
             # Fail closed (sec 0) rather than silently computing a bogus
-            # per-axis voxel size. This is a real-world case, not a
-            # hypothetical: image-stack MRC files (each "z" an independent 2D
-            # image, not a 3D volume) conventionally set mz=1 regardless of
-            # nz, which would otherwise divide the whole cell depth into a
-            # single voxel and make the z scale bar nz times too large.
+            # per-axis voxel size: a writer that sets mz=1 while cella_z spans
+            # the whole depth would otherwise divide that depth into a single
+            # voxel and make the z scale bar nz times too large.
+            #
+            # Image stacks are exempt, and are the reason this used to reject
+            # real files: mz=1-regardless-of-nz is the *convention* there, not
+            # a defect (110 of the 2871 image stacks in the deployment corpus
+            # write it, and were refused outright). Their z voxel size does
+            # not come from cella_z at all -- see below -- so a mismatched mz
+            # cannot poison it.
             raise NonStandardGridSizeError(
                 f"grid size (mx,my,mz)=({mx},{my},{mz}) does not match sample "
                 f"count (nx,ny,nz)=({nx},{ny},{nz}); per-axis voxel size would "
-                f"be unreliable (common in image-stack MRC files, e.g. mz=1)"
+                f"be unreliable"
             )
         # A single axis's cella can be zero while the others are populated --
         # common for per-section tilt-series stacks, where z isn't a real
@@ -185,7 +235,16 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
             (c / m) if c != 0.0 else 1.0
             for c, m in zip(cella, (mx, my, mz))
         )
-        voxel_size_is_default = any(c == 0.0 for c in cella)
+        # Only x/y are read from cella for a stack, so a zero or dummy cella_z
+        # there is expected rather than a sign the voxel size was guessed.
+        voxel_size_is_default = any(c == 0.0 for c in (cella[:2] if is_stack else cella))
+
+    if is_stack:
+        # Whatever the writer stamped on cella_z describes nothing: Relion
+        # copies the x/y pixel size onto the tilt axis (making 55 tilts 8.3nm
+        # "thick" against a 621nm-wide image, a 75x squash that leaves z
+        # unnavigable), IMOD writes a dummy 1.0. One unit per slice instead.
+        voxel_size = (voxel_size[0], voxel_size[1], STACK_Z_VOXEL_ANGSTROM)
 
     return MrcHeader(
         nx=nx, ny=ny, nz=nz, mode=mode,

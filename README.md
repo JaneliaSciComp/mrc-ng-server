@@ -145,6 +145,45 @@ before you have a number to compare against.
    `/info` automatically drops back to a single scale and requests for
    higher scales 404 — reload the layer in Neuroglancer to pick that up.
 
+### Image stacks (tilt series, gain references)
+
+A tilt series' z axis is a tilt *index*, not a spatial axis, so it gets
+handled differently from a tomogram's:
+
+- z resolution is advertised as **1 nm per slice**, ignoring whatever the
+  writer stamped on `cella_z`. Honouring it made 55 tilts 8.3 nm "thick"
+  against a 621 nm-wide image — a 75× squash that left the tilt axis
+  unnavigable. `info` carries a non-spec `"is_image_stack": true` when this
+  applies.
+- z is **never downsampled**: scale keys go `2_2_1`, `4_4_1`, … so a level
+  never averages tilts taken at different angles into one plane.
+- the `(mx,my,mz) != (nx,ny,nz)` grid check doesn't apply, since `mz=1`
+  regardless of `nz` is a normal convention for these files.
+
+MRC has no reliable flag for this — `ispg` is `0` on tomograms too — so it's
+inferred from shape: `nz < 0.05 * max(nx, ny)`.
+
+**This is a heuristic with a known failure mode.** Censused over all 3648 MRCs
+in the Janelia cryoET tree and cross-checked against the directory convention
+(`TiltSeries/`, `Gains/`, `Maps/` vs `Tomograms/`, `Annotations/`), it gets 3646
+right and **2 wrong** — and the constant cannot be tuned to fix them, because
+the two classes overlap: true 2D files span ratio 0.0001–0.2200, true 3D files
+span 0.1276–1.4120.
+
+The misses are `MdSimulation/.../TiltSeries/tilt_series{,_clean}.mrc`
+(250×150×55, ratio 0.22) — small-format synthetic stacks whose 55 tilts are a
+large fraction of a small frame, so they land inside the volume range and get
+served as tomograms (z from `cella`, z binned in the pyramid). Real
+4k-detector tilt series sit near 0.006–0.013 and classify fine.
+
+Check `is_image_stack` in `/info` if an axis looks wrong. Classifying a
+small-format stack correctly requires an explicit per-path setting, not a
+better threshold.
+
+**Caches built before this landed must be rebuilt** (`--force`): their z-binned
+scale keys are no longer advertised for a stack, so those files fall back to
+single-resolution until rebuilt.
+
 ## Browsing data in a web browser
 
 Instead of constructing Neuroglancer URLs by hand, browse `MRCNG_SOURCE_ROOT`

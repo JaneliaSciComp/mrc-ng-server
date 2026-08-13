@@ -171,6 +171,7 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
                     s for s in plan_scales(
                         (hdr.nx, hdr.ny, hdr.nz),
                         fp["params"]["min_axis_size"], fp["params"]["max_levels"],
+                        downsample_z=not hdr.is_image_stack,
                     )
                     if s.key in advertised
                 ]
@@ -271,6 +272,7 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
             scales = plan_scales(
                 (hdr.nx, hdr.ny, hdr.nz),
                 fp["params"]["min_axis_size"], fp["params"]["max_levels"],
+                downsample_z=not hdr.is_image_stack,
             )
             scale = next((s for s in scales if s.key == scale_key), None)
             if scale is None:

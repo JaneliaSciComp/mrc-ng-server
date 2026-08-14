@@ -46,10 +46,11 @@ def _add_cache_root_arg(parser: argparse.ArgumentParser) -> None:
                         help="cache tree root (default: $MRCNG_CACHE_ROOT)")
 
 
-def _iter_mrc_files(source_root: Path, globs: list[str]):
+def _iter_mrc_files(source_root: Path, globs: list[str], walk_root: Path | None = None):
+    walk_root = walk_root or source_root
     seen = set()
     for pattern in globs:
-        for path in sorted(source_root.rglob(pattern)):
+        for path in sorted(walk_root.rglob(pattern)):
             if path.is_file() and path not in seen:
                 seen.add(path)
                 yield path.relative_to(source_root).as_posix()
@@ -83,13 +84,18 @@ def _relpaths_from_file(list_path: str, source_root: Path) -> list[str]:
 
 
 def _select_relpaths(
-    source_root: Path, globs: list[str] | None, from_file: str | None
+    source_root: Path, globs: list[str] | None, from_file: str | None,
+    walk_root: Path | None = None,
 ) -> list[str]:
     """Relpaths to build, from --glob and/or --from-file (deduped, order-preserving).
 
     With neither, default to ``*.mrc`` (glob the whole tree) -- the general-purpose
     behaviour. With either or both, build exactly their union and add no implicit
-    ``*.mrc``, so a --from-file run builds only the listed volumes.
+    ``*.mrc``, so a --from-file run builds only the listed volumes. ``walk_root``
+    (from --under) scopes the glob walk to a subdirectory while relpaths stay
+    relative to ``source_root``, so the cache is addressable the same way a
+    full-tree build would produce -- --from-file paths are unaffected since
+    they're already explicit.
     """
     seen: set[str] = set()
     out: list[str] = []
@@ -100,13 +106,13 @@ def _select_relpaths(
             out.append(rel)
 
     if globs:
-        for rel in _iter_mrc_files(source_root, globs):
+        for rel in _iter_mrc_files(source_root, globs, walk_root):
             add(rel)
     if from_file:
         for rel in _relpaths_from_file(from_file, source_root):
             add(rel)
     if not globs and not from_file:
-        for rel in _iter_mrc_files(source_root, ["*.mrc"]):
+        for rel in _iter_mrc_files(source_root, ["*.mrc"], walk_root):
             add(rel)
     return out
 
@@ -132,13 +138,18 @@ def _build_command(args) -> int:
     logging.basicConfig(level=args.log_level)
     source_root = Path(args.source_root)
     cache_root = Path(args.cache_root)
+    walk_root = source_root
+    if args.under:
+        walk_root = (source_root / args.under).resolve()
+        if not walk_root.is_relative_to(source_root.resolve()) or not walk_root.is_dir():
+            raise SystemExit(f"--under {args.under!r} is not a directory under source_root")
     params = Params(
         chunk_size=tuple(args.chunk_size), downsample="mean",
         min_axis_size=args.min_axis_size, max_levels=args.max_levels,
         dtype="unset",  # build_one derives the real per-file dtype from each header
         encoding="raw",
     )
-    relpaths = _select_relpaths(source_root, args.glob, args.from_file)
+    relpaths = _select_relpaths(source_root, args.glob, args.from_file, walk_root)
     tasks = [
         (source_root, cache_root, relpath, params, args.force, args.max_block_bytes, args.assume_mode0)
         for relpath in relpaths
@@ -235,6 +246,13 @@ def main(argv: list[str] | None = None) -> int:
         help="file of newline-separated relpaths (relative to source_root) to "
              "build; combined with any --glob. With neither, the whole tree is "
              "globbed for *.mrc",
+    )
+    build_p.add_argument(
+        "--under",
+        help="scope the --glob walk to this subdirectory of source_root (relpaths "
+             "are still computed relative to source_root, so the cache matches what "
+             "a full-tree build would produce). Dev convenience for building a "
+             "small subset without hand-listing files via --from-file.",
     )
     build_p.add_argument("--chunk-size", type=_parse_chunk_size, default=(64, 64, 64))
     build_p.add_argument("--min-axis-size", type=int, default=32)

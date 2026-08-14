@@ -68,14 +68,31 @@ class Handle:
 
 class FdCache:
     def __init__(self, max_size: int = 256, assume_mode0: str | None = None,
-                 stack_globs=(), volume_globs=()):
+                 stack_globs=(), volume_globs=(), source_root: Path | None = None):
         self._max_size = max_size
         self._assume_mode0 = assume_mode0
         self._stack_globs = tuple(stack_globs)
         self._volume_globs = tuple(volume_globs)
+        # Globs are matched against the path relative to source_root, because
+        # that is what mrc-pyramid matches (it only ever has the relpath). Match
+        # the absolute path here instead and an anchored pattern like
+        # 'Experimental/*' classifies differently on the two sides -- which the
+        # fingerprint would catch as INCOMPATIBLE, so no wrong bytes, but the
+        # dataset would silently drop to single-resolution.
+        self._source_root = Path(source_root).resolve() if source_root is not None else None
         self._entries: OrderedDict[tuple, _Entry] = OrderedDict()
         self._lock = threading.Lock()
         self._eviction_count = 0
+
+    def _relpath_for(self, path: Path) -> str:
+        if self._source_root is None:
+            return str(path)
+        try:
+            return Path(path).resolve().relative_to(self._source_root).as_posix()
+        except ValueError:
+            # resolve_source already guarantees containment; if that ever changes,
+            # fall back to the absolute path rather than crashing a read.
+            return str(path)
 
     def _key_for(self, path: Path) -> tuple:
         st = os.stat(path)
@@ -107,7 +124,7 @@ class FdCache:
             hdr = parse_header(
                 fd, st.st_size, st.st_mtime_ns, assume_mode0=self._assume_mode0,
                 is_image_stack=classify_path(
-                    str(path), self._stack_globs, self._volume_globs),
+                    self._relpath_for(path), self._stack_globs, self._volume_globs),
             )
         except BaseException:
             os.close(fd)

@@ -37,3 +37,24 @@ def test_glob_settings_default_to_empty(tmp_path, monkeypatch):
 ])
 def test_parse_globs_ignores_blanks_and_whitespace(raw, expected):
     assert parse_globs(raw) == expected
+
+
+def test_server_matches_globs_against_the_relpath_like_the_builder(tmp_path, make_mrc_file):
+    """Regression: the server matched the absolute path, the builder the relpath.
+
+    `*/TiltSeries/*` happens to work either way, so this only shows up with an
+    anchored pattern -- and then the two sides disagree, the fingerprint reads
+    INCOMPATIBLE, and the dataset silently drops to single-resolution.
+    """
+    from mrcng.server.fdcache import FdCache
+
+    source_root = tmp_path / "source"
+    (source_root / "Experimental" / "ts").mkdir(parents=True)
+    make_mrc_file(name="source/Experimental/ts/s.mrc", shape=(256, 256, 8), mode=1)
+
+    cache = FdCache(stack_globs=("Experimental/*",), source_root=source_root)
+    try:
+        with cache.open(source_root / "Experimental" / "ts" / "s.mrc") as handle:
+            assert handle.hdr.is_image_stack is True
+    finally:
+        cache.close_all()

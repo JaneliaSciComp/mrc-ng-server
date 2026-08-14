@@ -226,7 +226,7 @@ def test_image_stack_pyramid_never_bins_z(tmp_path, make_mrc_file):
 
     cache_dir = cache_dir_for(cache_root, dataset_id("stack.mrc"))
     fp = read_fingerprint(cache_dir)
-    assert fp["scales"] == ["2_2_1", "4_4_1"]
+    assert list(fp["scales"]) == ["2_2_1", "4_4_1"]
 
     info = json.loads((cache_dir / "info").read_text())
     assert info["is_image_stack"] is True

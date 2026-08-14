@@ -305,7 +305,7 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
 
             fp = build_fingerprint(
                 fd, hdr, relpath, params,
-                scales=[s.key for s in scales[1:]],
+                scales={s.key: s.size for s in scales[1:]},
                 generator_version=GENERATOR_VERSION,
                 build_duration_s=time.monotonic() - start,
             )

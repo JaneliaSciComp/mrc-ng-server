@@ -244,14 +244,25 @@ def test_a_build_completing_is_visible_without_a_new_request_needing_eviction(tm
 def test_valid_cache_serves_the_built_info_bytes(cached_setup):
     # The inverse of the old rebuilt-from-header guard: the body must now be
     # exactly what the build wrote, so info can never disagree with the chunks
-    # sitting next to it on disk.
+    # sitting next to it on disk. Without the sentinel mutation below,
+    # json.dumps(build_info(...)) recomputed from the header can happen to be
+    # byte-identical to the file on disk for this fixture, so the assertion
+    # couldn't fail even against the old recompute-from-header implementation.
+    # Adding a key build_info could never produce forces the comparison to
+    # only pass if the response is the on-disk bytes, verbatim.
     client, _, cache_root, relpath = cached_setup
     from mrcng.paths import dataset_id, cache_dir_for
     cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
 
+    info_path = cache_dir / "info"
+    mutated = json.loads(info_path.read_text())
+    mutated["_sdd_sentinel"] = "served-from-disk"
+    mutated_bytes = json.dumps(mutated).encode()
+    info_path.write_bytes(mutated_bytes)
+
     resp = client.get(f"/data/{relpath}/info")
     assert resp.status_code == 200
-    assert resp.content == (cache_dir / "info").read_bytes()
+    assert resp.content == mutated_bytes
 
 
 def test_stale_derivation_invalidates_the_cache(cached_setup):

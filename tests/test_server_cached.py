@@ -359,3 +359,38 @@ def test_cached_chunk_404s_when_scale_key_absent_from_fingerprint(cached_setup):
     assert (cache_dir / removed).is_dir(), "level must still exist on disk"
     resp = client.get(f"/data/{relpath}/{removed}/0-8_0-8_0-8")
     assert resp.status_code == 404
+
+
+def test_corrupt_cached_info_falls_back_to_single_scale(cached_setup):
+    # Regression: a truncated/non-JSON info file next to a valid fingerprint
+    # used to be served verbatim as 200 application/json (only OSError was
+    # caught), handing Neuroglancer garbage instead of degrading like an
+    # unreadable or missing info file does.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    (cache_dir / "info").write_bytes(b"{not valid json")
+
+    resp = client.get(f"/data/{relpath}/info")
+    assert resp.status_code == 200
+    assert [s["key"] for s in resp.json()["scales"]] == ["1_1_1"]
+
+
+def test_chunk_request_404s_when_fingerprint_scale_size_is_not_iterable(cached_setup):
+    # Regression: a schema-v2 fingerprint holding a scalar/None for a present
+    # scale key made tuple(fp["scales"][scale_key]) raise TypeError -> 500,
+    # instead of degrading like every other corrupt-fingerprint path.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    fp_path = cache_dir / "fingerprint.json"
+    fp = json.loads(fp_path.read_text())
+
+    scale_key = "2_2_2"
+    fp["scales"][scale_key] = None
+    fp_path.write_text(json.dumps(fp))
+
+    resp = client.get(f"/data/{relpath}/{scale_key}/0-8_0-8_0-8")
+    assert resp.status_code == 404

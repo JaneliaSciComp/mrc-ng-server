@@ -139,6 +139,7 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
         return Response(status_code=404)
 
     body: bytes | None = None
+    etag: str | None = None
     try:
         with fd_cache.open(path) as handle:
             hdr = handle.hdr
@@ -160,14 +161,15 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
                 # whenever a derivation changes.
                 try:
                     body = (cache_dir / "info").read_bytes()
-                except OSError:
+                    json.loads(body)
+                except (OSError, json.JSONDecodeError):
                     # Unreachable in a complete entry: fingerprint.json is
                     # written last, after info is fsynced. Degrade rather than
                     # 500, per the missing/stale/corrupt-all-read-as-no-cache
                     # ground rule.
                     _logger.error(
-                        "%s: fingerprint is valid but cache info is unreadable; "
-                        "falling back to single scale", relpath,
+                        "%s: fingerprint is valid but cache info is unreadable or "
+                        "corrupt; falling back to single scale", relpath,
                     )
                     cache_hit = False
                 else:
@@ -262,14 +264,14 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
             # here meant the server had to re-derive downsample_z and agree with
             # the builder, or 404 levels that exist. Validates the chunk spec
             # against the grid before touching the filesystem, per sec 9.
-            scale = ScaleLevel(
-                key=scale_key,
-                size=tuple(fp["scales"][scale_key]),
-                factors=tuple(int(f) for f in scale_key.split("_")),
-            )
             try:
+                scale = ScaleLevel(
+                    key=scale_key,
+                    size=tuple(fp["scales"][scale_key]),
+                    factors=tuple(int(f) for f in scale_key.split("_")),
+                )
                 clip_chunk_to_scale(scale, x0, x1, y0, y1, z0, z1, chunk_size=settings.chunk_size)
-            except ValueError:
+            except (TypeError, ValueError):
                 return Response(status_code=404)
     except MrcFormatError as e:
         return _header_error_response(e)

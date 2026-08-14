@@ -13,18 +13,50 @@ from pathlib import Path
 
 from mrcng.reader import pread_exact
 
+# Two version numbers guard the cache and they answer different questions. Bump
+# the wrong one and the cache is not invalidated at all.
+#
+#   SCHEMA_VERSION      the *shape* of fingerprint.json: which keys exist and what
+#                       types their values have. Bump when build_fingerprint
+#                       changes its output structure -- a key added, removed,
+#                       renamed or retyped. v1 -> v2 did this: "scales" went from
+#                       a list of keys to a key -> [sx, sy, sz] mapping.
+#                       Mismatch => Validity.INCOMPATIBLE, i.e. "this code cannot
+#                       reliably read that file".
+#
+#   DERIVATION_VERSION  the *content* a build produced: the values in info and the
+#                       bytes in the chunk files. The fingerprint's shape is fine;
+#                       what changed is the meaning of the artifacts sitting beside
+#                       it. Mismatch => Validity.OUTDATED, i.e. "this file is
+#                       readable but describes artifacts built by superseded code".
+#
+# Which one? Ask whether an existing fingerprint would still parse and compare
+# correctly. If no, it is a schema change. If yes, but the info/chunks next to it
+# are now wrong, it is a derivation change. A change that does both bumps both.
+#
+# SCHEMA_VERSION is checked first and already rejects every existing entry, so a
+# schema bump alone is sufficient -- you never *have* to add a derivation bump on
+# top of it, though it is harmless to. The converse does not hold: a derivation
+# bump does nothing for a fingerprint whose shape this code cannot read.
+#
+# Only ever increment. Reusing or lowering either number silently revalidates
+# caches built by code that no longer exists.
+#
+# "generator_version" is a third field, recorded for forensics and deliberately
+# never compared: a release bump must not invalidate a whole corpus by itself.
 SCHEMA_VERSION = 2
 
 _ADDRESSING_FIELDS = ("chunk_size", "encoding", "dtype")
 
 # Bump when a change alters what a build produces: the voxel size or data_type in
-# info, the scale plan, the chunk bytes, or the encoding. Bumping invalidates
-# every cache entry (Validity.OUTDATED) so they rebuild against the new
-# behaviour. NOT bumping leaves the old artifacts served as though nothing
-# changed, with no signal anywhere -- that is how a zero-cella-z tilt stack once
-# served "resolution": [.., .., 0.0] for weeks after the fix landed (46e8a88).
-# The modules this tracks are mrcheader.py, precomputed.py, downsample.py,
-# pyramid.py and reader.py.
+# info, the scale plan, the chunk bytes, or the encoding. Tracks mrcheader.py,
+# precomputed.py, downsample.py, pyramid.py and reader.py.
+#
+# NOT bumping leaves the old artifacts served as though nothing changed, with no
+# signal anywhere -- no failing test, no warning from `mrc-pyramid status`. That
+# is how a zero-cella-z tilt stack once served "resolution": [.., .., 0.0] for
+# weeks after the fix landed (46e8a88). When unsure, bump: a needless rebuild
+# costs batch I/O, a missed one costs correctness nobody notices.
 DERIVATION_VERSION = 1
 
 

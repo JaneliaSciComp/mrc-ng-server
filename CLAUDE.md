@@ -19,6 +19,10 @@ Bump it if you changed any of these in `mrcheader.py`, `precomputed.py`,
 Do **not** bump for changes to `server/`, `cli.py`, `benchmark.py`, comments,
 docstrings, or tests — those cannot change what a build wrote.
 
+If you changed the *shape* of `fingerprint.json` itself — a key added, removed,
+renamed or retyped — that is `SCHEMA_VERSION`, not `DERIVATION_VERSION`. The two
+are contrasted in full at the top of `src/mrcng/fingerprint.py`.
+
 When unsure, bump. A full rebuild of the 1.38 TiB Janelia tree is ~5.4
 core-hours (under 90 minutes at `--jobs 4`); serving silently-wrong cached
 metadata cost weeks last time.

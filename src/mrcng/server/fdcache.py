@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from mrcng.fingerprint import read_fingerprint, validate
-from mrcng.mrcheader import parse_header
+from mrcng.mrcheader import classify_path, parse_header
 
 _logger = logging.getLogger("mrcng.server")
 
@@ -67,9 +67,12 @@ class Handle:
 
 
 class FdCache:
-    def __init__(self, max_size: int = 256, assume_mode0: str | None = None):
+    def __init__(self, max_size: int = 256, assume_mode0: str | None = None,
+                 stack_globs=(), volume_globs=()):
         self._max_size = max_size
         self._assume_mode0 = assume_mode0
+        self._stack_globs = tuple(stack_globs)
+        self._volume_globs = tuple(volume_globs)
         self._entries: OrderedDict[tuple, _Entry] = OrderedDict()
         self._lock = threading.Lock()
         self._eviction_count = 0
@@ -101,7 +104,11 @@ class FdCache:
         fd = os.open(str(path), os.O_RDONLY)
         try:
             st = os.stat(fd)
-            hdr = parse_header(fd, st.st_size, st.st_mtime_ns, assume_mode0=self._assume_mode0)
+            hdr = parse_header(
+                fd, st.st_size, st.st_mtime_ns, assume_mode0=self._assume_mode0,
+                is_image_stack=classify_path(
+                    str(path), self._stack_globs, self._volume_globs),
+            )
         except BaseException:
             os.close(fd)
             raise

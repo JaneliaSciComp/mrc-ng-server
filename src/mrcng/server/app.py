@@ -83,7 +83,8 @@ def get_app() -> FastAPI:
 
 
 def create_app(settings) -> FastAPI:
-    fd_cache = FdCache(max_size=settings.fd_cache_size, assume_mode0=settings.assume_mode0)
+    fd_cache = FdCache(max_size=settings.fd_cache_size, assume_mode0=settings.assume_mode0,
+                       stack_globs=settings.stack_globs, volume_globs=settings.volume_globs)
     semaphore = asyncio.Semaphore(settings.max_concurrent_reads)
 
     @asynccontextmanager

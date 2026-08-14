@@ -194,25 +194,31 @@ handled differently from a tomogram's:
 - the `(mx,my,mz) != (nx,ny,nz)` grid check doesn't apply, since `mz=1`
   regardless of `nz` is a normal convention for these files.
 
-MRC has no reliable flag for this — `ispg` is `0` on tomograms too — so it's
-inferred from shape: `nz < 0.05 * max(nx, ny)`.
+Which files those are is **operator configuration**, not inference — no MRC
+header field can answer it, and shape cannot either (measured over 3648 corpus
+files, true 2D span `nz/max(nx,ny)` 0.0001–0.2200 and true 3D span 0.1276–1.4120,
+so the classes overlap and no threshold is correct).
 
-**This is a heuristic with a known failure mode.** Censused over all 3648 MRCs
-in the Janelia cryoET tree and cross-checked against the directory convention
-(`TiltSeries/`, `Gains/`, `Maps/` vs `Tomograms/`, `Annotations/`), it gets 3646
-right and **2 wrong** — and the constant cannot be tuned to fix them, because
-the two classes overlap: true 2D files span ratio 0.0001–0.2200, true 3D files
-span 0.1276–1.4120.
+Set it at build time, and give the server the same values:
 
-The misses are `MdSimulation/.../TiltSeries/tilt_series{,_clean}.mrc`
-(250×150×55, ratio 0.22) — small-format synthetic stacks whose 55 tilts are a
-large fraction of a small frame, so they land inside the volume range and get
-served as tomograms (z from `cella`, z binned in the pyramid). Real
-4k-detector tilt series sit near 0.006–0.013 and classify fine.
+```bash
+mrc-pyramid build ... \
+    --stack-glob '*/TiltSeries/*' --stack-glob '*/Gains/*' \
+    --volume-glob '*/Tomograms/*' --volume-glob '*_ctf.mrc'
+```
 
-Check `is_image_stack` in `/info` if an axis looks wrong. Classifying a
-small-format stack correctly requires an explicit per-path setting, not a
-better threshold.
+`--volume-glob` wins over `--stack-glob`, because real trees mix both in one
+directory: this corpus has `.../external/s200.mrc` (a 55-tilt stack) beside
+`.../external/s200_ctf.mrc` (a 512×512×55 volume). Patterns are `fnmatch` against
+the relpath, so `*` crosses `/` and `*/TiltSeries/*` means "anywhere under".
+
+With no globs set nothing is a stack and z comes from `cella` as it always did.
+
+The build records its answer in the fingerprint, so **changing the globs
+invalidates exactly the entries it reclassifies** (`incompatible`) and a plain
+`mrc-pyramid build` rebuilds them. If the server's globs disagree with the
+build's, affected entries read as `incompatible` and it serves single-resolution
+— safe, but silent, so keep the two in sync.
 
 **Caches built before this landed must be rebuilt** (`--force`): their z-binned
 scale keys are no longer advertised for a stack, so those files fall back to

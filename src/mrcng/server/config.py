@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     # cache reads as INCOMPATIBLE (params.dtype mismatch) -- fail-safe, but
     # silently so.
     assume_mode0: Literal["int8", "uint8"] | None = None
+    # Which files have a z axis that is a slice index rather than a spatial one
+    # (tilt series, gain references, montage maps). fnmatch patterns against the
+    # relpath; volume_globs win over stack_globs. MUST match what mrc-pyramid
+    # built with: a mismatch makes every affected entry read as INCOMPATIBLE, so
+    # the server degrades to single-resolution rather than serving wrong bytes,
+    # but it degrades silently. Only consulted for files with no valid cache --
+    # a cached file's classification comes from its fingerprint and info.
+    stack_globs: tuple[str, ...] = ()
+    volume_globs: tuple[str, ...] = ()
     # Below this many bytes per chunk row, read_chunk switches from one pread per
     # (z, y) row to one pread per z-plane: 64x fewer syscalls, at an nx/(x1-x0)
     # over-read. Which side wins is a property of the storage, so this is a knob

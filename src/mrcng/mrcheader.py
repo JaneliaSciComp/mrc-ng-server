@@ -5,6 +5,7 @@ offset(x, y, z) = data_offset + (z*ny*nx + y*nx + x) * itemsize
 """
 from __future__ import annotations
 
+import fnmatch
 import struct
 from dataclasses import dataclass
 
@@ -26,20 +27,23 @@ _MODE_DTYPES = {
 # widened to float32 on the way out. See MrcHeader.served_dtype.
 _WIDEN_ON_SERVE = {np.dtype("<f2"): np.dtype("<f4")}
 
-# An image stack (tilt series, gain reference) has a z axis that is a slice
-# index, not a spatial sampling -- so cella_z carries no physical meaning and
-# adjacent "slices" must never be averaged together. MRC has no reliable flag
-# saying which kind of file this is: ispg is 0 on every file in the Janelia
-# cryoET corpus, tomograms included, and writers agree on nothing else either
-# (Relion stamps mz=nz with cella_z = nz * pixel_x, IMOD stamps mz=1 with a
-# dummy cella_z, and only some stacks carry an extended header). Shape is the
-# only signal that actually separates them.
-STACK_ASPECT_RATIO = 0.05
-
-# z voxel size advertised for an image stack: one slice == one nanometre, so
-# one Neuroglancer unit == one slice. The precomputed format has no way to say
-# "this axis is an index" and rejects a zero or absent resolution, so a round
-# 1nm is the closest honest thing available.
+# An image stack (tilt series, gain reference, montage map) has a z axis that is
+# a slice index, not a spatial sampling -- so cella_z carries no physical meaning
+# and adjacent "slices" must never be averaged together.
+#
+# Nothing in the MRC header can tell you which kind of file this is. ispg is 0 on
+# every file in the Janelia cryoET corpus, tomograms included, and writers agree
+# on nothing else either: Relion stamps mz=nz with cella_z = nz * pixel_x, IMOD
+# stamps mz=1 with a dummy cella_z, and only some stacks carry an extended header.
+# Shape does not separate them either -- measured over 3648 corpus files, true 2D
+# files span nz/max(nx,ny) 0.0001-0.2200 and true 3D files 0.1276-1.4120, so the
+# classes overlap and no threshold can be correct. An earlier aspect-ratio
+# heuristic lived here and was knowingly wrong on 2 of those files.
+#
+# So the classification is an *input*, not something derived: callers match the
+# file's path against operator-supplied globs (classify_path below) and pass the
+# answer to parse_header. The build records its answer in the fingerprint, so a
+# later glob change invalidates the entries it would reclassify.
 STACK_Z_VOXEL_ANGSTROM = 10.0
 
 _UNSUPPORTED_MODE_REASONS = {
@@ -74,20 +78,26 @@ class TruncatedFileError(MrcFormatError):
     pass
 
 
-def _is_image_stack(nx: int, ny: int, nz: int) -> bool:
-    """Whether z is a slice index rather than a spatial axis. See STACK_ASPECT_RATIO."""
-    # ponytail: aspect-ratio heuristic, because no header field can answer this
-    # (see STACK_ASPECT_RATIO). KNOWN WRONG on 2 of the 3648 MRCs in the
-    # deployment corpus, and not fixable by tuning the constant: cross-checked
-    # against the path convention, true 2D files span ratio 0.0001-0.2200 and
-    # true 3D files span 0.1276-1.4120, so the two classes *overlap* and no
-    # single threshold separates them. The misses are small-format synthetic
-    # tilt series (250x150x55, ratio 0.22) whose 55 tilts are a large fraction
-    # of a small frame; real 4k-detector tilt series sit near 0.006-0.013 and
-    # classify fine. 0.05 was chosen to sit between the bulk of both clusters.
-    # Upgrade path: an explicit per-path setting, which is the only thing that
-    # can classify a small-format stack correctly.
-    return nz < STACK_ASPECT_RATIO * max(nx, ny)
+def classify_path(relpath: str, stack_globs, volume_globs=()) -> bool:
+    """Whether `relpath` names an image stack, per operator-supplied globs.
+
+    fnmatch patterns, matched against the whole path, so `*` crosses `/` and
+    `*/TiltSeries/*` means "anywhere under a TiltSeries directory".
+
+    volume_globs win over stack_globs, because real trees put both kinds in one
+    directory: the Janelia corpus has `.../external/s200.mrc` (a 55-tilt stack)
+    beside `.../external/s200_ctf.mrc` (a 512x512x55 volume). Broad stack
+    directories plus narrow volume exclusions classify all 3648 corpus files
+    correctly; an include-only list cannot without per-filename patterns.
+
+    No globs configured means nothing is a stack -- z comes from cella as it
+    always did. That is the safe default: it is the pre-existing behaviour, and
+    getting it wrong understates a tilt series' z extent rather than silently
+    averaging tilts together.
+    """
+    if any(fnmatch.fnmatch(relpath, g) for g in volume_globs):
+        return False
+    return any(fnmatch.fnmatch(relpath, g) for g in stack_globs)
 
 
 @dataclass(frozen=True)
@@ -108,6 +118,7 @@ class MrcHeader:
     maps: int
     voxel_size_angstrom: tuple[float, float, float]
     voxel_size_is_default: bool
+    is_image_stack: bool
     mode0_signedness_is_ambiguous: bool
     dtype: np.dtype
     data_offset: int
@@ -117,17 +128,6 @@ class MrcHeader:
     @property
     def shape_zyx(self) -> tuple[int, int, int]:
         return (self.nz, self.ny, self.nx)
-
-    @property
-    def is_image_stack(self) -> bool:
-        """z is a slice/tilt index, not a spatial axis.
-
-        Drives three things that must all agree, or a cached pyramid stops
-        matching the served scale plan: the advertised z resolution
-        (STACK_Z_VOXEL_ANGSTROM), whether plan_scales is allowed to bin z, and
-        whether a (mx,my,mz) != (nx,ny,nz) grid is an error or expected.
-        """
-        return _is_image_stack(self.nx, self.ny, self.nz)
 
     @property
     def served_dtype(self) -> np.dtype:
@@ -166,7 +166,8 @@ def _dtype_for_mode(mode: int, raw: bytes, assume_mode0: str | None) -> tuple[np
     return np.dtype(np.int8), True
 
 
-def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | None = None) -> MrcHeader:
+def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | None = None,
+                  is_image_stack: bool = False) -> MrcHeader:
     raw = _pread_header(fd)
 
     nx, ny, nz, mode = struct.unpack_from("<4i", raw, 0)
@@ -201,7 +202,7 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
             f"file is {file_size} bytes but header implies at least {required} bytes"
         )
 
-    is_stack = _is_image_stack(nx, ny, nz)
+    is_stack = is_image_stack
 
     voxel_size_is_default = False
     if mx == 0 or my == 0 or mz == 0 or all(c == 0.0 for c in cella):
@@ -253,6 +254,7 @@ def parse_header(fd: int, file_size: int, mtime_ns: int, assume_mode0: str | Non
         mapc=mapc, mapr=mapr, maps=maps,
         voxel_size_angstrom=voxel_size,
         voxel_size_is_default=voxel_size_is_default,
+        is_image_stack=is_stack,
         mode0_signedness_is_ambiguous=mode0_signedness_is_ambiguous,
         dtype=dtype, data_offset=data_offset,
         file_size=file_size, mtime_ns=mtime_ns,

@@ -41,12 +41,14 @@ metadata cost weeks last time.
   See `precomputed.py`'s module docstring.
 - `pread` only, never mmap. The server never downsamples or writes on the
   request path — scales >= 1 come from the cache or 404.
-- Do not retune `STACK_ASPECT_RATIO` in `mrcheader.py`. True 2D files span
-  ratio 0.0001-0.2200 and true 3D files span 0.1276-1.4120 — the classes
-  overlap, so no threshold is correct. It is knowingly wrong on 2 of 3648
-  corpus files. The comment above `_is_image_stack` explains it.
-- `/notes/` is gitignored; committed docs go in `docs/`.
-- Read `docs/mrc-layout-and-reads.md` before touching `reader.py`.
+- **Image-stack classification is operator config, not inference.** Which files
+  have a z axis that is a slice index comes from `--stack-glob` / `--volume-glob`
+  (`MRCNG_STACK_GLOBS` / `MRCNG_VOLUME_GLOBS`), matched in
+  `mrcheader.classify_path`. Volume globs win over stack globs. Nothing in an MRC
+  header can answer this and shape cannot either — an aspect-ratio heuristic used
+  to live here and was wrong on real files. The builder records its answer in the
+  fingerprint, so the server and `mrc-pyramid` must be given the same globs or
+  uncached files classify differently; cached files carry the answer with them.
 
 ## Tests
 

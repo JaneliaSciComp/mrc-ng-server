@@ -161,7 +161,7 @@ def test_build_fingerprint_records_scale_sizes(make_mrc_file):
                                generator_version="test", build_duration_s=0.0)
     finally:
         os.close(fd)
-    assert fp["schema_version"] == 2
+    assert fp["schema_version"] == 3
     assert fp["scales"] == {"2_2_2": [4, 4, 4]}
     # iterating the mapping still yields keys, which app.py relies on
     assert list(fp["scales"]) == ["2_2_2"]

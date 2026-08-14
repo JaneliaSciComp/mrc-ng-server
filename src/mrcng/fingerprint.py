@@ -44,7 +44,7 @@ from mrcng.reader import pread_exact
 #
 # "generator_version" is a third field, recorded for forensics and deliberately
 # never compared: a release bump must not invalidate a whole corpus by itself.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _ADDRESSING_FIELDS = ("chunk_size", "encoding", "dtype")
 
@@ -104,6 +104,11 @@ def build_fingerprint(fd: int, hdr, relpath: str, params: Params,
         "schema_version": SCHEMA_VERSION,
         "generator_version": generator_version,
         "derivation_version": DERIVATION_VERSION,
+        # The classification this build used. Recorded because it is an *input*
+        # (operator globs), not something re-derivable from the header: without it
+        # a glob change would leave every reclassified entry reading as VALID with
+        # a z resolution and scale plan from the old answer.
+        "is_image_stack": hdr.is_image_stack,
         "source_relpath": relpath,
         "source_size": hdr.file_size,
         "source_mtime_ns": hdr.mtime_ns,
@@ -155,6 +160,15 @@ def validate(fp: dict, hdr, fd: int, current_params: Params) -> Validity:
 
     if fp.get("derivation_version") != DERIVATION_VERSION:
         return Validity.OUTDATED
+
+    # A build's classification is an operator input, so a caller configured with
+    # different globs than the build must not reuse its artifacts. INCOMPATIBLE
+    # rather than OUTDATED: it changes the scale plan, i.e. chunk addressing.
+    # This is also what makes a server/builder glob mismatch fail safe -- the
+    # entry is ignored and single-resolution is served, instead of the two
+    # disagreeing silently about what z means.
+    if fp.get("is_image_stack") != hdr.is_image_stack:
+        return Validity.INCOMPATIBLE
 
     fp_params = fp.get("params", {})
     current = asdict(current_params)

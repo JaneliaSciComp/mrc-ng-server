@@ -47,6 +47,8 @@ Other settings (all optional, with defaults):
 | `MRCNG_MAX_CONCURRENT_READS` | `32` | Semaphore around threadpool MRC reads |
 | `MRCNG_FD_CACHE_SIZE` | `256` | Max open file descriptors kept warm (keep well under `ulimit -n`) |
 | `MRCNG_CORS_ORIGINS` | `*` | Neuroglancer needs CORS unless the viewer is served same-origin |
+| `MRCNG_STACK_GLOBS` | *(empty)* | Comma-separated fnmatch patterns for files whose z is a slice index. Must match what `mrc-pyramid` built with |
+| `MRCNG_VOLUME_GLOBS` | *(empty)* | Comma-separated patterns forcing 3D-volume treatment; wins over `MRCNG_STACK_GLOBS` |
 
 A `.env` file in the repo root also works (pydantic-settings loads it via
 the environment).

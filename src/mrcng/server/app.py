@@ -28,6 +28,7 @@ from mrcng.precomputed import (
 )
 from mrcng.reader import read_chunk, choose_strategy, ChunkOutOfBounds, UnexpectedEOF
 from mrcng.server.browse import create_browse_router
+from mrcng.server.config import parse_globs
 from mrcng.server.fdcache import FdCache
 
 MRCNG_VERSION = version("mrc-ng-server")
@@ -84,7 +85,8 @@ def get_app() -> FastAPI:
 
 def create_app(settings) -> FastAPI:
     fd_cache = FdCache(max_size=settings.fd_cache_size, assume_mode0=settings.assume_mode0,
-                       stack_globs=settings.stack_globs, volume_globs=settings.volume_globs)
+                       stack_globs=parse_globs(settings.stack_globs),
+                       volume_globs=parse_globs(settings.volume_globs))
     semaphore = asyncio.Semaphore(settings.max_concurrent_reads)
 
     @asynccontextmanager

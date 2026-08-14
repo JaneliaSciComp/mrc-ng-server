@@ -49,8 +49,23 @@ SCHEMA_VERSION = 2
 _ADDRESSING_FIELDS = ("chunk_size", "encoding", "dtype")
 
 # Bump when a change alters what a build produces: the voxel size or data_type in
-# info, the scale plan, the chunk bytes, or the encoding. Tracks mrcheader.py,
-# precomputed.py, downsample.py, pyramid.py and reader.py.
+# info, the scale plan, the chunk bytes, or the encoding.
+#
+# It tracks the modules that decide what a build writes -- today mrcheader.py
+# (voxel size, data_type, is_image_stack, byte offsets), precomputed.py
+# (plan_scales, build_info, encode_chunk), downsample.py (the voxel arithmetic for
+# every level >= 1), pyramid.py (which levels get written, the level-from-level
+# cascade, downsample_z) and reader.py (the source voxels that get downsampled).
+# Treat that as a consequence of the rule, not the rule itself: if you add a
+# module, ask whether its code can change the values in info or the bytes in a
+# chunk file. If it can, it is one of these, and changing it needs a bump.
+#
+# Not tracked, and why they fail differently: server/ only serves what already
+# exists; cli.py parses arguments, and the params it passes are fingerprinted
+# separately; benchmark.py only measures; this module describes and validates
+# rather than producing. paths.py is the subtle one -- dataset_id sets where a
+# cache lives, so changing it does not make entries stale, it orphans them, which
+# is what `mrc-pyramid prune` is for.
 #
 # NOT bumping leaves the old artifacts served as though nothing changed, with no
 # signal anywhere -- no failing test, no warning from `mrc-pyramid status`. That

@@ -9,8 +9,10 @@ what a build produces, you must bump `DERIVATION_VERSION` in
 valid, indefinitely, with no warning from `mrc-pyramid status` and no failing
 test.
 
-Bump it if you changed any of these in `mrcheader.py`, `precomputed.py`,
-`downsample.py`, `pyramid.py` or `reader.py`:
+The test: **can your change alter the values in `info` or the bytes in a chunk
+file?** Today that means `mrcheader.py`, `precomputed.py`, `downsample.py`,
+`pyramid.py` and `reader.py` — but apply the question, not the list, if you add a
+module. Bump if you changed any of:
 
 - the voxel size, `data_type`, or anything else that appears in `info`
 - the scale plan (which levels exist, their sizes or factors)

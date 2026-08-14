@@ -257,20 +257,16 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
             if scale_key not in fp.get("scales", ()):
                 return Response(status_code=404)
 
-            # Recompute the scale plan from this build's own params (a pure
-            # calculation, no extra I/O -- min_axis_size/max_levels come from
-            # the fingerprint, not the server's current settings, since they
-            # don't invalidate the cache and an older build may have used
-            # different values). Validates the chunk spec against the grid
-            # before touching the filesystem, per sec 9.
-            scales = plan_scales(
-                (hdr.nx, hdr.ny, hdr.nz),
-                fp["params"]["min_axis_size"], fp["params"]["max_levels"],
-                downsample_z=not hdr.is_image_stack,
+            # The level's size comes from the build that wrote these chunks, so
+            # validation cannot drift from them -- recomputing the scale plan
+            # here meant the server had to re-derive downsample_z and agree with
+            # the builder, or 404 levels that exist. Validates the chunk spec
+            # against the grid before touching the filesystem, per sec 9.
+            scale = ScaleLevel(
+                key=scale_key,
+                size=tuple(fp["scales"][scale_key]),
+                factors=tuple(int(f) for f in scale_key.split("_")),
             )
-            scale = next((s for s in scales if s.key == scale_key), None)
-            if scale is None:
-                return Response(status_code=404)
             try:
                 clip_chunk_to_scale(scale, x0, x1, y0, y1, z0, z1, chunk_size=settings.chunk_size)
             except ValueError:

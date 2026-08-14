@@ -315,3 +315,47 @@ def test_valid_fingerprint_with_unreadable_info_falls_back(cached_setup):
     resp = client.get(f"/data/{relpath}/info")
     assert resp.status_code == 200
     assert [s["key"] for s in resp.json()["scales"]] == ["1_1_1"]
+
+
+def test_cached_chunk_extent_comes_from_the_fingerprint_not_a_recomputed_plan(cached_setup):
+    # The one assertion that tells the two implementations apart. Poison the
+    # recorded size for a level; a server that recomputes plan_scales gets the
+    # real (16,16,16) back and serves 200, while one that trusts the fingerprint
+    # clips against (4,4,4) and 404s. This is the whole point of the change: the
+    # build that wrote the chunks decides how they are addressed.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    fp_path = cache_dir / "fingerprint.json"
+    fp = json.loads(fp_path.read_text())
+
+    scale_key = "2_2_2"
+    assert fp["scales"][scale_key] == [16, 16, 16], "fixture shape changed"
+    # The chunk is legitimately served before poisoning.
+    assert client.get(f"/data/{relpath}/{scale_key}/0-8_0-8_0-8").status_code == 200
+
+    fp["scales"][scale_key] = [4, 4, 4]
+    fp_path.write_text(json.dumps(fp))
+
+    resp = client.get(f"/data/{relpath}/{scale_key}/0-8_0-8_0-8")
+    assert resp.status_code == 404
+
+
+def test_cached_chunk_404s_when_scale_key_absent_from_fingerprint(cached_setup):
+    # Unchanged guard, re-asserted against the mapping so the list -> dict change
+    # is covered: a level dir on disk that the fingerprint does not list is a
+    # leftover from an earlier build of a different source, and its bytes are
+    # stale. Passes before and after this task; it is here as a regression net,
+    # not as the proof.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    fp_path = cache_dir / "fingerprint.json"
+    fp = json.loads(fp_path.read_text())
+    removed = "4_4_4"
+    del fp["scales"][removed]
+    fp_path.write_text(json.dumps(fp))
+
+    assert (cache_dir / removed).is_dir(), "level must still exist on disk"
+    resp = client.get(f"/data/{relpath}/{removed}/0-8_0-8_0-8")
+    assert resp.status_code == 404

@@ -12,3 +12,6 @@ dist/
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+# AI-tooling related
+teach/
+.codegraph/

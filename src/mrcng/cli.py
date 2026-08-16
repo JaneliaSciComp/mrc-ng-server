@@ -73,13 +73,75 @@ def _add_classification_args(parser: argparse.ArgumentParser) -> None:
                              "(default: $MRCNG_VOLUME_GLOBS, comma-separated)")
 
 
-def _iter_mrc_files(source_root: Path, globs: list[str]):
+def _iter_mrc_files(source_root: Path, globs: list[str], walk_root: Path | None = None):
+    walk_root = walk_root or source_root
     seen = set()
     for pattern in globs:
-        for path in sorted(source_root.rglob(pattern)):
+        for path in sorted(walk_root.rglob(pattern)):
             if path.is_file() and path not in seen:
                 seen.add(path)
                 yield path.relative_to(source_root).as_posix()
+
+
+def _relpaths_from_file(list_path: str, source_root: Path) -> list[str]:
+    """Read newline-separated relpaths (relative to source_root) to build.
+
+    Blank lines and ``#`` comments are skipped. An entry that isn't a file under
+    source_root is skipped with a warning -- the same is-file / in-tree contract
+    the glob walk enforces, so a bad or hostile list can't build outside the
+    tree. Lets a caller (e.g. a catalog scanner) build exactly its known set of
+    volumes instead of globbing every stray ``.mrc``.
+    """
+    root = source_root.resolve()
+    out: list[str] = []
+    with open(list_path) as f:
+        for line in f:
+            rel = line.strip()
+            if not rel or rel.startswith("#"):
+                continue
+            abs_path = (root / rel).resolve()
+            if not abs_path.is_relative_to(root):
+                _logger.warning("skipping %r: resolves outside source root", rel)
+                continue
+            if not abs_path.is_file():
+                _logger.warning("skipping %r: not a file under source root", rel)
+                continue
+            out.append(abs_path.relative_to(root).as_posix())
+    return out
+
+
+def _select_relpaths(
+    source_root: Path, globs: list[str] | None, from_file: str | None,
+    walk_root: Path | None = None,
+) -> list[str]:
+    """Relpaths to build, from --glob and/or --from-file (deduped, order-preserving).
+
+    With neither, default to ``*.mrc`` (glob the whole tree) -- the general-purpose
+    behaviour. With either or both, build exactly their union and add no implicit
+    ``*.mrc``, so a --from-file run builds only the listed volumes. ``walk_root``
+    (from --under) scopes the glob walk to a subdirectory while relpaths stay
+    relative to ``source_root``, so the cache is addressable the same way a
+    full-tree build would produce -- --from-file paths are unaffected since
+    they're already explicit.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(rel: str) -> None:
+        if rel not in seen:
+            seen.add(rel)
+            out.append(rel)
+
+    if globs:
+        for rel in _iter_mrc_files(source_root, globs, walk_root):
+            add(rel)
+    if from_file:
+        for rel in _relpaths_from_file(from_file, source_root):
+            add(rel)
+    if not globs and not from_file:
+        for rel in _iter_mrc_files(source_root, ["*.mrc"], walk_root):
+            add(rel)
+    return out
 
 
 def _build_one_record(task: tuple) -> dict:
@@ -105,17 +167,22 @@ def _build_command(args) -> int:
     logging.basicConfig(level=args.log_level)
     source_root = Path(args.source_root)
     cache_root = Path(args.cache_root)
+    walk_root = source_root
+    if args.under:
+        walk_root = (source_root / args.under).resolve()
+        if not walk_root.is_relative_to(source_root.resolve()) or not walk_root.is_dir():
+            raise SystemExit(f"--under {args.under!r} is not a directory under source_root")
     params = Params(
         chunk_size=tuple(args.chunk_size), downsample="mean",
         min_axis_size=args.min_axis_size, max_levels=args.max_levels,
         dtype="unset",  # build_one derives the real per-file dtype from each header
         encoding="raw",
     )
-    globs = args.glob or ["*.mrc"]
+    relpaths = _select_relpaths(source_root, args.glob, args.from_file, walk_root)
     tasks = [
         (source_root, cache_root, relpath, params, args.force, args.max_block_bytes,
          args.assume_mode0, tuple(args.stack_glob or ()), tuple(args.volume_glob or ()))
-        for relpath in _iter_mrc_files(source_root, globs)
+        for relpath in relpaths
     ]
 
     records = []
@@ -203,10 +270,23 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     build_p = sub.add_parser("build")
-    _add_source_root_arg(build_p)
+    _add_source_root_arg(build_p, flag=True)
     _add_cache_root_arg(build_p)
     build_p.add_argument("--glob", action="append")
     _add_classification_args(build_p)
+    build_p.add_argument(
+        "--from-file",
+        help="file of newline-separated relpaths (relative to source_root) to "
+             "build; combined with any --glob. With neither, the whole tree is "
+             "globbed for *.mrc",
+    )
+    build_p.add_argument(
+        "--under",
+        help="scope the --glob walk to this subdirectory of source_root (relpaths "
+             "are still computed relative to source_root, so the cache matches what "
+             "a full-tree build would produce). Dev convenience for building a "
+             "small subset without hand-listing files via --from-file.",
+    )
     build_p.add_argument("--chunk-size", type=_parse_chunk_size, default=(64, 64, 64))
     build_p.add_argument("--min-axis-size", type=int, default=32)
     build_p.add_argument("--max-levels", type=int, default=6)

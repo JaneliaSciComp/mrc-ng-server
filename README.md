@@ -56,16 +56,26 @@ the environment).
 ## Building the cache
 
 ```bash
-pixi run build-cache /path/to/tomograms --cache-root /path/to/cache
+pixi run build-cache --source-root /path/to/tomograms --cache-root /path/to/cache
 ```
 
 Extra arguments pass straight through to `mrc-pyramid build`:
 
 ```bash
-pixi run build-cache /path/to/tomograms --cache-root /path/to/cache \
+pixi run build-cache --source-root /path/to/tomograms --cache-root /path/to/cache \
     --glob '*.mrc' --glob '*.rec' --jobs 4 \
     --chunk-size 64,64,64 --min-axis-size 32 --max-levels 6 \
     --report report.jsonl
+```
+
+For local dev, `--under some/subdir` scopes the glob walk to a subdirectory of
+`--source-root` (relpaths stay relative to the full `--source-root`, so the
+cache resolves the same as a full-tree build) — a quick way to build a handful
+of tomograms without listing them one by one via `--from-file`:
+
+```bash
+pixi run build-cache --source-root /path/to/tomograms --cache-root /path/to/cache \
+    --under Experimental/some_lab/some_sample
 ```
 
 Safe to re-run: files with a valid, up-to-date cache are skipped

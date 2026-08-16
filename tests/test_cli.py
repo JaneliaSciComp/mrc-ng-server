@@ -12,7 +12,7 @@ def test_build_writes_report_jsonl(tmp_path, make_mrc_file):
     report_path = tmp_path / "report.jsonl"
 
     rc = main([
-        "build", str(source_root), "--cache-root", str(cache_root),
+        "build", "--source-root", str(source_root), "--cache-root", str(cache_root),
         "--chunk-size", "8,8,8", "--min-axis-size", "8", "--max-levels", "3",
         "--report", str(report_path),
     ])
@@ -37,7 +37,7 @@ def test_build_report_flags_default_voxel_size(tmp_path, make_mrc_file):
     report_path = tmp_path / "report.jsonl"
 
     rc = main([
-        "build", str(source_root), "--cache-root", str(cache_root),
+        "build", "--source-root", str(source_root), "--cache-root", str(cache_root),
         "--chunk-size", "8,8,8", "--min-axis-size", "8", "--max-levels", "3",
         "--report", str(report_path),
     ])
@@ -52,7 +52,7 @@ def test_status_reports_missing_and_valid(tmp_path, make_mrc_file, capsys):
     make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
     cache_root = tmp_path / "cache"
 
-    main(["build", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
+    main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
     capsys.readouterr()  # discard build's output
     # status must be told the same chunk-size the build used, or it correctly
     # reports incompatible -- see test_status_reports_incompatible_for_real below.
@@ -72,7 +72,7 @@ def test_status_reports_incompatible_for_real(tmp_path, make_mrc_file, capsys):
     make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
     cache_root = tmp_path / "cache"
 
-    main(["build", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
+    main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
     capsys.readouterr()
     rc = main(["status", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "32,32,32"])
     assert rc == 0
@@ -86,7 +86,7 @@ def test_prune_removes_orphaned_cache_entries(tmp_path, make_mrc_file):
     mrc_path = make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
     cache_root = tmp_path / "cache"
 
-    main(["build", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
+    main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
     os.remove(mrc_path)
 
     rc = main(["prune", "--cache-root", str(cache_root), "--source-root", str(source_root)])
@@ -105,7 +105,7 @@ def test_prune_respects_glob(tmp_path, make_mrc_file):
     make_mrc_file(name="source/a.rec", shape=(16, 16, 16), mode=1)
     cache_root = tmp_path / "cache"
 
-    main(["build", str(source_root), "--cache-root", str(cache_root),
+    main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
           "--glob", "*.rec", "--chunk-size", "8,8,8"])
 
     from mrcng.paths import dataset_id, cache_dir_for
@@ -124,7 +124,7 @@ def test_status_respects_glob(tmp_path, make_mrc_file, capsys):
     make_mrc_file(name="source/a.rec", shape=(16, 16, 16), mode=1)
     cache_root = tmp_path / "cache"
 
-    main(["build", str(source_root), "--cache-root", str(cache_root),
+    main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
           "--glob", "*.rec", "--chunk-size", "8,8,8"])
     capsys.readouterr()
 
@@ -144,7 +144,7 @@ def test_build_returns_nonzero_when_a_file_fails(tmp_path, make_mrc_file):
     (source_root / "bad.mrc").write_bytes(b"not an mrc file")
     cache_root = tmp_path / "cache"
 
-    rc = main(["build", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
+    rc = main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
     assert rc == 1
 
 
@@ -157,7 +157,7 @@ def test_build_jobs_parallelizes_without_changing_results(tmp_path, make_mrc_fil
     report_path = tmp_path / "report.jsonl"
 
     rc = main([
-        "build", str(source_root), "--cache-root", str(cache_root),
+        "build", "--source-root", str(source_root), "--cache-root", str(cache_root),
         "--chunk-size", "8,8,8", "--jobs", "3", "--report", str(report_path),
     ])
     assert rc == 0
@@ -173,7 +173,7 @@ def test_build_accepts_log_level(tmp_path, make_mrc_file):
     make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
     cache_root = tmp_path / "cache"
 
-    rc = main(["build", str(source_root), "--cache-root", str(cache_root),
+    rc = main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
                "--chunk-size", "8,8,8", "--log-level", "DEBUG"])
     assert rc == 0
 
@@ -186,7 +186,7 @@ def test_build_assume_mode0_flag_reaches_the_header_parser(tmp_path, make_mrc_fi
     report_path = tmp_path / "report.jsonl"
 
     rc = main([
-        "build", str(source_root), "--cache-root", str(cache_root),
+        "build", "--source-root", str(source_root), "--cache-root", str(cache_root),
         "--chunk-size", "8,8,8", "--assume-mode0", "uint8", "--report", str(report_path),
     ])
     assert rc == 0
@@ -199,6 +199,46 @@ def test_build_assume_mode0_flag_reaches_the_header_parser(tmp_path, make_mrc_fi
     assert fp["params"]["dtype"] == "uint8"
 
 
+def test_build_from_file_builds_only_listed(tmp_path, make_mrc_file):
+    """--from-file builds exactly the listed relpaths, not every *.mrc in the tree.
+
+    Comments (#) and blank lines are ignored, and no implicit *.mrc glob is
+    added — so a stray sibling .mrc (a gain reference, say) is left unbuilt.
+    """
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    make_mrc_file(name="source/keep.mrc", shape=(16, 16, 16), mode=1)
+    make_mrc_file(name="source/skip.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"
+    list_file = tmp_path / "list.txt"
+    list_file.write_text("keep.mrc\n# skip.mrc is deliberately not listed\n\n")
+
+    rc = main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
+               "--chunk-size", "8,8,8", "--from-file", str(list_file)])
+    assert rc == 0
+
+    from mrcng.paths import dataset_id, cache_dir_for
+    assert cache_dir_for(cache_root, dataset_id("keep.mrc")).exists()
+    assert not cache_dir_for(cache_root, dataset_id("skip.mrc")).exists()
+
+
+def test_build_from_file_skips_missing_and_out_of_tree(tmp_path, make_mrc_file):
+    """Entries that don't resolve to a file under source_root are skipped, not fatal."""
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"
+    list_file = tmp_path / "list.txt"
+    list_file.write_text("a.mrc\nnope.mrc\n../outside.mrc\n")  # real, missing, escape
+
+    rc = main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
+               "--chunk-size", "8,8,8", "--from-file", str(list_file)])
+    assert rc == 0  # the two bad entries are skipped; the one real file builds
+
+    from mrcng.paths import dataset_id, cache_dir_for
+    assert cache_dir_for(cache_root, dataset_id("a.mrc")).exists()
+
+
 def test_status_warns_on_ambiguous_mode0_signedness(tmp_path, make_mrc_file, caplog):
     import logging
     source_root = tmp_path / "source"
@@ -206,7 +246,7 @@ def test_status_warns_on_ambiguous_mode0_signedness(tmp_path, make_mrc_file, cap
     make_mrc_file(name="source/a.mrc", shape=(8, 8, 8), mode=0)
     cache_root = tmp_path / "cache"
 
-    main(["build", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
+    main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
     with caplog.at_level(logging.WARNING, logger="mrcng.pyramid"):
         main(["status", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
 

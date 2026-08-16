@@ -42,37 +42,6 @@ def test_info_has_all_scales_when_cache_valid(cached_setup):
     assert len(scales) > 1
 
 
-def test_cached_info_is_rebuilt_from_the_header_not_served_from_disk(cached_setup):
-    # Regression: info was served as the verbatim bytes of cache_dir/"info".
-    # The fingerprint compares chunk addressing and source identity only and
-    # ignores generator_version, so a header-derivation fix never invalidated
-    # an existing cache -- a zero-cella-z tilt stack kept advertising
-    # "resolution": [.., .., 0.0] (rejected outright by Neuroglancer) for as
-    # long as its stale info file sat in the cache. Poisoning that file stands
-    # in for any stored value the current code would now derive differently.
-    client, _, cache_root, relpath = cached_setup
-    from mrcng.paths import dataset_id, cache_dir_for
-    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
-
-    good = json.loads((cache_dir / "info").read_text())
-    poisoned = json.loads(json.dumps(good))
-    poisoned["data_type"] = "uint64"
-    for scale in poisoned["scales"]:
-        scale["resolution"] = [0.0, 0.0, 0.0]
-    (cache_dir / "info").write_text(json.dumps(poisoned))
-
-    resp = client.get(f"/data/{relpath}/info")
-    assert resp.status_code == 200
-    served = resp.json()
-    assert served["data_type"] == "int16"
-    assert all(r > 0 for s in served["scales"] for r in s["resolution"])
-    # still the cache's own scale set, not a single-scale fallback: level 0
-    # plus exactly the levels the fingerprint says were built
-    fp = json.loads((cache_dir / "fingerprint.json").read_text())
-    assert [s["key"] for s in served["scales"]] == ["1_1_1", *fp["scales"]]
-    assert [s["key"] for s in served["scales"]] == [s["key"] for s in good["scales"]]
-
-
 def test_cached_chunk_byte_identical_to_disk(cached_setup):
     client, _, cache_root, relpath = cached_setup
     resp = client.get(f"/data/{relpath}/2_2_2/0-8_0-8_0-8")
@@ -127,10 +96,14 @@ def test_scale0_still_served_when_cache_valid(cached_setup):
 
 
 def test_cached_info_has_etag_derived_from_fingerprint(cached_setup):
-    client, _, _, relpath = cached_setup
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    fp = json.loads((cache_dir / "fingerprint.json").read_text())
+
     resp = client.get(f"/data/{relpath}/info")
     assert resp.status_code == 200
-    assert resp.headers["etag"]
+    assert resp.headers["etag"] == f'"{fp["source_header_sha256"][:16]}-{fp["derivation_version"]}"'
 
 
 def test_cached_chunk_keeps_long_immutable_cache_control(cached_setup):
@@ -266,3 +239,158 @@ def test_a_build_completing_is_visible_without_a_new_request_needing_eviction(tm
     build_one(source_root, cache_root, relpath, params)
 
     assert len(client.get(f"/data/{relpath}/info").json()["scales"]) > 1
+
+
+def test_valid_cache_serves_the_built_info_bytes(cached_setup):
+    # The inverse of the old rebuilt-from-header guard: the body must now be
+    # exactly what the build wrote, so info can never disagree with the chunks
+    # sitting next to it on disk. Without the sentinel mutation below,
+    # json.dumps(build_info(...)) recomputed from the header can happen to be
+    # byte-identical to the file on disk for this fixture, so the assertion
+    # couldn't fail even against the old recompute-from-header implementation.
+    # Adding a key build_info could never produce forces the comparison to
+    # only pass if the response is the on-disk bytes, verbatim.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+
+    info_path = cache_dir / "info"
+    mutated = json.loads(info_path.read_text())
+    mutated["_sdd_sentinel"] = "served-from-disk"
+    mutated_bytes = json.dumps(mutated).encode()
+    info_path.write_bytes(mutated_bytes)
+
+    resp = client.get(f"/data/{relpath}/info")
+    assert resp.status_code == 200
+    assert resp.content == mutated_bytes
+
+
+def test_stale_derivation_invalidates_the_cache(cached_setup):
+    # Replaces test_cached_info_is_rebuilt_from_the_header_not_served_from_disk.
+    # That test existed because a derivation fix used to leave every cached info
+    # stale and still served (46e8a88: a zero-cella-z tilt stack advertising
+    # "resolution": [.., .., 0.0] long after the header fix landed). We now
+    # serve the stored bytes, so the protection has to come from invalidation
+    # instead: a wrong derivation_version stands in for any such code change, and
+    # must drop the entry to the single-scale fallback rather than serve it.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+
+    fp_path = cache_dir / "fingerprint.json"
+    fp = json.loads(fp_path.read_text())
+    assert len(fp["scales"]) > 0, "fixture must have built at least one extra level"
+    fp["derivation_version"] = 999
+    fp_path.write_text(json.dumps(fp))
+
+    resp = client.get(f"/data/{relpath}/info")
+    assert resp.status_code == 200
+    assert [s["key"] for s in resp.json()["scales"]] == ["1_1_1"]
+
+
+def test_cached_info_etag_covers_the_derivation_version(cached_setup):
+    # After a derivation change and rebuild the source is byte-identical, so an
+    # ETag built from source_header_sha256 alone would not change while the info
+    # body did -- a client holding a 304 would keep stale metadata forever.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    fp = json.loads((cache_dir / "fingerprint.json").read_text())
+
+    resp = client.get(f"/data/{relpath}/info")
+    assert str(fp["derivation_version"]) in resp.headers["etag"]
+    assert fp["source_header_sha256"][:16] in resp.headers["etag"]
+
+
+def test_valid_fingerprint_with_unreadable_info_falls_back(cached_setup):
+    # The fingerprint is written last, after info is fsynced, so this should be
+    # unreachable -- but "missing, stale, incompatible or corrupt all read as no
+    # cache" is the codebase's ground rule, and a half-deleted cache entry must
+    # degrade rather than 500.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    (cache_dir / "info").unlink()
+
+    resp = client.get(f"/data/{relpath}/info")
+    assert resp.status_code == 200
+    assert [s["key"] for s in resp.json()["scales"]] == ["1_1_1"]
+
+
+def test_cached_chunk_extent_comes_from_the_fingerprint_not_a_recomputed_plan(cached_setup):
+    # The one assertion that tells the two implementations apart. Poison the
+    # recorded size for a level; a server that recomputes plan_scales gets the
+    # real (16,16,16) back and serves 200, while one that trusts the fingerprint
+    # clips against (4,4,4) and 404s. This is the whole point of the change: the
+    # build that wrote the chunks decides how they are addressed.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    fp_path = cache_dir / "fingerprint.json"
+    fp = json.loads(fp_path.read_text())
+
+    scale_key = "2_2_2"
+    assert fp["scales"][scale_key] == [16, 16, 16], "fixture shape changed"
+    # The chunk is legitimately served before poisoning.
+    assert client.get(f"/data/{relpath}/{scale_key}/0-8_0-8_0-8").status_code == 200
+
+    fp["scales"][scale_key] = [4, 4, 4]
+    fp_path.write_text(json.dumps(fp))
+
+    resp = client.get(f"/data/{relpath}/{scale_key}/0-8_0-8_0-8")
+    assert resp.status_code == 404
+
+
+def test_cached_chunk_404s_when_scale_key_absent_from_fingerprint(cached_setup):
+    # Unchanged guard, re-asserted against the mapping so the list -> dict change
+    # is covered: a level dir on disk that the fingerprint does not list is a
+    # leftover from an earlier build of a different source, and its bytes are
+    # stale. Passes before and after this task; it is here as a regression net,
+    # not as the proof.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    fp_path = cache_dir / "fingerprint.json"
+    fp = json.loads(fp_path.read_text())
+    removed = "4_4_4"
+    del fp["scales"][removed]
+    fp_path.write_text(json.dumps(fp))
+
+    assert (cache_dir / removed).is_dir(), "level must still exist on disk"
+    resp = client.get(f"/data/{relpath}/{removed}/0-8_0-8_0-8")
+    assert resp.status_code == 404
+
+
+def test_corrupt_cached_info_falls_back_to_single_scale(cached_setup):
+    # Regression: a truncated/non-JSON info file next to a valid fingerprint
+    # used to be served verbatim as 200 application/json (only OSError was
+    # caught), handing Neuroglancer garbage instead of degrading like an
+    # unreadable or missing info file does.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    (cache_dir / "info").write_bytes(b"{not valid json")
+
+    resp = client.get(f"/data/{relpath}/info")
+    assert resp.status_code == 200
+    assert [s["key"] for s in resp.json()["scales"]] == ["1_1_1"]
+
+
+def test_chunk_request_404s_when_fingerprint_scale_size_is_not_iterable(cached_setup):
+    # Regression: a schema-v2 fingerprint holding a scalar/None for a present
+    # scale key made tuple(fp["scales"][scale_key]) raise TypeError -> 500,
+    # instead of degrading like every other corrupt-fingerprint path.
+    client, _, cache_root, relpath = cached_setup
+    from mrcng.paths import dataset_id, cache_dir_for
+
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+    fp_path = cache_dir / "fingerprint.json"
+    fp = json.loads(fp_path.read_text())
+
+    scale_key = "2_2_2"
+    fp["scales"][scale_key] = None
+    fp_path.write_text(json.dumps(fp))
+
+    resp = client.get(f"/data/{relpath}/{scale_key}/0-8_0-8_0-8")
+    assert resp.status_code == 404

@@ -508,3 +508,11 @@ non-empty extended header, odd dimensions (`101×97×53`), anisotropic
    cached chunk serving, staleness tests.
 5. **M5** — Hardening: fd cache, semaphore, structured logs, `/healthz`,
    nginx doc snippet, benchmark script.
+
+## Amendment 2026-08-14: cached `info` is authoritative again
+
+The rule that `info` is always recomputed from the live header (commit
+46e8a88) is reversed. A valid cache entry's `info` is now served verbatim,
+which is safe because the fingerprint gained a `DERIVATION_VERSION` that
+invalidates every entry when it is bumped. See
+`docs/superpowers/specs/2026-08-14-cached-info-authority-design.md`.

@@ -47,6 +47,8 @@ Other settings (all optional, with defaults):
 | `MRCNG_MAX_CONCURRENT_READS` | `32` | Semaphore around threadpool MRC reads |
 | `MRCNG_FD_CACHE_SIZE` | `256` | Max open file descriptors kept warm (keep well under `ulimit -n`) |
 | `MRCNG_CORS_ORIGINS` | `*` | Neuroglancer needs CORS unless the viewer is served same-origin |
+| `MRCNG_STACK_GLOBS` | *(empty)* | Comma-separated fnmatch patterns for files whose z is a slice index. Must match what `mrc-pyramid` built with |
+| `MRCNG_VOLUME_GLOBS` | *(empty)* | Comma-separated patterns forcing 3D-volume treatment; wins over `MRCNG_STACK_GLOBS` |
 
 A `.env` file in the repo root also works (pydantic-settings loads it via
 the environment).
@@ -154,6 +156,85 @@ before you have a number to compare against.
 5. If a cache goes stale (source file rebuilt/modified) or is deleted,
    `/info` automatically drops back to a single scale and requests for
    higher scales 404 — reload the layer in Neuroglancer to pick that up.
+
+### Cache invalidation
+
+`/info` for a cached file is the **verbatim artifact the build wrote**, not a
+recomputation — so it always describes exactly the chunk files on disk. A cache
+entry is invalidated automatically by either of:
+
+- **the source header changing** — size, mtime, or a sha256 over the header
+  (including the extended header) differs → `stale`
+- **build-determining code changing** — `fingerprint.DERIVATION_VERSION`, bumped
+  by hand when a change alters the voxel size or data_type in `info`, the scale
+  plan, the chunk bytes, or the encoding, differs → `outdated`
+
+`mrc-pyramid status` reports both states per file. A plain `mrc-pyramid build`
+rebuilds anything that isn't `valid` — `--force` is only needed to rebuild a
+still-valid entry.
+
+Two consequences worth knowing:
+
+- **`DERIVATION_VERSION` must be bumped by whoever changes a derivation.** It is
+  not computed. Miss it and both the cached `info` and the cached chunks keep
+  being served as valid, with no warning from `status` and no failing test —
+  which is how a zero-`cella_z` tilt stack once served
+  `"resolution": [.., .., 0.0]` for weeks after the fix landed. A full rebuild
+  of the 1.38 TiB Janelia tree is ~5.4 core-hours, under 90 minutes at
+  `--jobs 4`, so bumping when unsure is much cheaper than not bumping.
+- **Invalidation is synchronised.** Every entry expires at once, and the server
+  never builds on the request path, so the whole corpus serves
+  single-resolution until the rebuild catches up. To avoid that window, build
+  into a fresh `--cache-root` and swap it in.
+
+Voxel data is never hashed — that would mean reading the entire corpus on every
+validation — so `valid` means "the header is unchanged", not "no byte of the
+file changed".
+
+### Image stacks (tilt series, gain references)
+
+A tilt series' z axis is a tilt *index*, not a spatial axis, so it gets
+handled differently from a tomogram's:
+
+- z resolution is advertised as **1 nm per slice**, ignoring whatever the
+  writer stamped on `cella_z`. Honouring it made 55 tilts 8.3 nm "thick"
+  against a 621 nm-wide image — a 75× squash that left the tilt axis
+  unnavigable. `info` carries a non-spec `"is_image_stack": true` when this
+  applies.
+- z is **never downsampled**: scale keys go `2_2_1`, `4_4_1`, … so a level
+  never averages tilts taken at different angles into one plane.
+- the `(mx,my,mz) != (nx,ny,nz)` grid check doesn't apply, since `mz=1`
+  regardless of `nz` is a normal convention for these files.
+
+Which files those are is **operator configuration**, not inference — no MRC
+header field can answer it, and shape cannot either (measured over 3648 corpus
+files, true 2D span `nz/max(nx,ny)` 0.0001–0.2200 and true 3D span 0.1276–1.4120,
+so the classes overlap and no threshold is correct).
+
+Set it at build time, and give the server the same values:
+
+```bash
+mrc-pyramid build ... \
+    --stack-glob '*/TiltSeries/*' --stack-glob '*/Gains/*' \
+    --volume-glob '*/Tomograms/*' --volume-glob '*_ctf.mrc'
+```
+
+`--volume-glob` wins over `--stack-glob`, because real trees mix both in one
+directory: this corpus has `.../external/s200.mrc` (a 55-tilt stack) beside
+`.../external/s200_ctf.mrc` (a 512×512×55 volume). Patterns are `fnmatch` against
+the relpath, so `*` crosses `/` and `*/TiltSeries/*` means "anywhere under".
+
+With no globs set nothing is a stack and z comes from `cella` as it always did.
+
+The build records its answer in the fingerprint, so **changing the globs
+invalidates exactly the entries it reclassifies** (`incompatible`) and a plain
+`mrc-pyramid build` rebuilds them. If the server's globs disagree with the
+build's, affected entries read as `incompatible` and it serves single-resolution
+— safe, but silent, so keep the two in sync.
+
+**Caches built before this landed must be rebuilt** (`--force`): their z-binned
+scale keys are no longer advertised for a stack, so those files fall back to
+single-resolution until rebuilt.
 
 ## Browsing data in a web browser
 

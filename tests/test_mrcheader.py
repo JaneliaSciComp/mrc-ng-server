@@ -6,7 +6,7 @@ import mrcfile
 import pytest
 
 from mrcng.mrcheader import (
-    parse_header, UnsupportedModeError, UnsupportedByteOrderError,
+    classify_path, parse_header, UnsupportedModeError, UnsupportedByteOrderError,
     NonStandardAxisOrderError, NonStandardGridSizeError, TruncatedFileError,
 )
 
@@ -175,3 +175,73 @@ def test_non_mode0_is_never_ambiguous(make_mrc_file):
     path = make_mrc_file(shape=(4, 4, 4), mode=1)
     hdr = _parse(path)
     assert hdr.mode0_signedness_is_ambiguous is False
+
+
+def test_image_stack_z_voxel_is_one_nanometre_per_slice(make_mrc_file):
+    # Regression: Relion writes a tilt series with mz=nz and cella_z =
+    # nz * pixel_x, so cella_z/mz handed back the x/y pixel size (0.1516nm for
+    # the file this came from). 55 tilts then spanned 8.3nm against a 621nm
+    # image -- a 75x squash that made the tilt axis unnavigable in
+    # Neuroglancer. z is an index here; advertise one unit per slice.
+    path = make_mrc_file(shape=(1024, 1024, 40), mode=2,
+                         voxel_size_angstrom=(1.516, 1.516, 1.516))
+    hdr = _parse(path, is_image_stack=True)
+    assert hdr.is_image_stack is True
+    np.testing.assert_allclose(hdr.voxel_size_angstrom, (1.516, 1.516, 10.0))
+    assert hdr.voxel_size_is_default is False
+
+
+def test_volume_keeps_its_real_z_voxel_size(make_mrc_file):
+    # Same writer convention, tomogram proportions -- z is a real spatial axis
+    # and must be left alone.
+    path = make_mrc_file(shape=(843, 1187, 375), mode=2,
+                         voxel_size_angstrom=(10.0, 10.0, 10.0))
+    hdr = _parse(path)
+    assert hdr.is_image_stack is False
+    np.testing.assert_allclose(hdr.voxel_size_angstrom, (10.0, 10.0, 10.0))
+
+
+def test_image_stack_is_exempt_from_the_grid_size_guard(make_mrc_file):
+    # IMOD's convention: mz=1 regardless of nz, with a dummy cella_z. 110 of
+    # the image stacks in the deployment corpus write this and used to be
+    # refused outright by NonStandardGridSizeError. x/y still come from
+    # cella/m, which is correct per spec for any m.
+    path = make_mrc_file(shape=(4746, 3370, 29), mode=2,
+                         voxel_size_angstrom=(2.5, 2.5, 1.0), grid_size=(1, 1, 1))
+    hdr = _parse(path, is_image_stack=True)
+    assert hdr.is_image_stack is True
+    np.testing.assert_allclose(hdr.voxel_size_angstrom, (2.5, 2.5, 10.0))
+
+
+def test_image_stack_zero_cella_z_is_not_flagged_as_default(make_mrc_file):
+    # cella_z == 0 is expected for a stack and says nothing about x/y, which
+    # are the only axes read from cella there.
+    path = make_mrc_file(shape=(1024, 1024, 40), mode=2,
+                         voxel_size_angstrom=(1.5, 1.5, 0.0))
+    hdr = _parse(path, is_image_stack=True)
+    np.testing.assert_allclose(hdr.voxel_size_angstrom, (1.5, 1.5, 10.0))
+    assert hdr.voxel_size_is_default is False
+
+
+def test_classify_path_requires_a_matching_stack_glob():
+    # No globs configured => nothing is a stack, and z comes from cella exactly as
+    # it did before any of this existed. Safe default: understating a tilt series'
+    # z extent beats silently averaging tilts together.
+    assert classify_path("a/TiltSeries/x.mrc", ()) is False
+    assert classify_path("a/TiltSeries/x.mrc", ("*/TiltSeries/*",)) is True
+    assert classify_path("a/Tomograms/x.mrc", ("*/TiltSeries/*",)) is False
+
+
+def test_classify_path_volume_globs_win():
+    # The case that forced two lists rather than one: the corpus puts a 55-tilt
+    # stack and a 512x512x55 volume in the same directory, told apart only by
+    # filename, so a broad stack directory needs narrow volume exclusions.
+    stack, volume = ("*/external/*",), ("*_ctf.mrc",)
+    assert classify_path("j/external/s200/s200.mrc", stack, volume) is True
+    assert classify_path("j/external/s200/s200_ctf.mrc", stack, volume) is False
+
+
+def test_classify_path_star_crosses_slashes():
+    # fnmatch against the whole path, so "*/TiltSeries/*" means "anywhere under a
+    # TiltSeries directory", at any depth.
+    assert classify_path("a/b/c/TiltSeries/d/e/f.mrc", ("*/TiltSeries/*",)) is True

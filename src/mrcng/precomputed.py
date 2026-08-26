@@ -20,11 +20,21 @@ class ScaleLevel:
     factors: tuple[int, int, int]
 
 
-def plan_scales(size0: tuple[int, int, int], min_axis_size: int = 32, max_levels: int = 6) -> list[ScaleLevel]:
+def plan_scales(size0: tuple[int, int, int], min_axis_size: int = 32, max_levels: int = 6,
+                downsample_z: bool = True) -> list[ScaleLevel]:
+    """downsample_z=False pins the z factor at 1 for every level.
+
+    Pass it for an image stack (MrcHeader.is_image_stack): binning z there
+    averages adjacent *tilts* -- images of different things, taken at
+    different angles -- into one plane, which is not a downsample of anything.
+    Must match whatever mrc-pyramid built with, since it changes the scale keys.
+    """
     levels = [ScaleLevel(key="1_1_1", size=tuple(size0), factors=(1, 1, 1))]
     while len(levels) < max_levels:
         prev = levels[-1]
         step = tuple(2 if s > min_axis_size else 1 for s in prev.size)
+        if not downsample_z:
+            step = (step[0], step[1], 1)
         if step == (1, 1, 1):
             break
         new_factors = tuple(f * s for f, s in zip(prev.factors, step))
@@ -58,6 +68,10 @@ def build_info(hdr, scales: list[ScaleLevel], chunk_size: tuple[int, int, int], 
         # doesn't silently advertise a made-up 0.1nm voxel size with nothing
         # marking it as a guess.
         "voxel_size_is_default": hdr.voxel_size_is_default,
+        # Also not part of the spec. Says the z resolution above is one unit
+        # per slice rather than a measured spacing, and that z is unbinned in
+        # every scale -- otherwise there is no way to tell from info alone.
+        "is_image_stack": hdr.is_image_stack,
     }
 
 

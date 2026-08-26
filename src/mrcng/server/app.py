@@ -28,6 +28,7 @@ from mrcng.precomputed import (
 )
 from mrcng.reader import read_chunk, choose_strategy, ChunkOutOfBounds, UnexpectedEOF
 from mrcng.server.browse import create_browse_router
+from mrcng.server.config import parse_globs
 from mrcng.server.fdcache import FdCache
 
 MRCNG_VERSION = version("mrc-ng-server")
@@ -83,7 +84,10 @@ def get_app() -> FastAPI:
 
 
 def create_app(settings) -> FastAPI:
-    fd_cache = FdCache(max_size=settings.fd_cache_size, assume_mode0=settings.assume_mode0)
+    fd_cache = FdCache(max_size=settings.fd_cache_size, assume_mode0=settings.assume_mode0,
+                       stack_globs=parse_globs(settings.stack_globs),
+                       volume_globs=parse_globs(settings.volume_globs),
+                       source_root=settings.source_root)
     semaphore = asyncio.Semaphore(settings.max_concurrent_reads)
 
     @asynccontextmanager
@@ -138,6 +142,8 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
     except PathNotAllowed:
         return Response(status_code=404)
 
+    body: bytes | None = None
+    etag: str | None = None
     try:
         with fd_cache.open(path) as handle:
             hdr = handle.hdr
@@ -145,48 +151,43 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
             validity, fp = handle.validity_for(cache_dir, _current_params(settings, hdr))
             cache_hit = validity == Validity.VALID and fp is not None
             if cache_hit:
-                # Rebuilt from the live header, never served from
-                # cache_dir/"info" verbatim. Everything in info is a pure
-                # function of the header plus the scale plan, and the
-                # fingerprint validates neither: it compares chunk addressing
-                # (chunk_size/encoding/dtype) and source identity only, and
-                # ignores generator_version entirely. Serving the stored bytes
-                # meant any fix to voxel-size or data_type derivation kept
-                # returning the old wrong answer for every already-cached
-                # dataset until someone force-rebuilt -- which is how a
-                # zero-cella-z tilt stack went on advertising
-                # "resolution": [.., .., 0.0] and getting rejected by
-                # Neuroglancer long after the header fix landed. Recomputing
-                # costs one build_info call on a ~1KB body, once per layer.
+                # The built artifact is authoritative. It and the chunk files
+                # next to it came out of the same build, so info can never
+                # advertise a level the cache does not have -- which is what
+                # recomputing the scale plan here and intersecting it with
+                # fp["scales"] used to risk, silently, whenever the server's
+                # plan disagreed with the builder's.
                 #
-                # fp stays authoritative for *which* levels exist, exactly as
-                # in _serve_chunk: min_axis_size/max_levels come from the
-                # fingerprint (they don't invalidate the cache, so this
-                # build's values may differ from the server's settings), and
-                # fp["scales"] is the built set. It records scales[1:] --
-                # level 0 is served from the source, not the cache -- so
-                # 1_1_1 is always advertised on top of it.
-                advertised = {"1_1_1", *fp["scales"]}
-                scales = [
-                    s for s in plan_scales(
-                        (hdr.nx, hdr.ny, hdr.nz),
-                        fp["params"]["min_axis_size"], fp["params"]["max_levels"],
+                # Safe only because validate() returns OUTDATED when
+                # fingerprint.DERIVATION_VERSION moves, so a derivation change
+                # invalidates every entry instead of leaving stale bytes served
+                # forever (46e8a88) -- which means that constant MUST be bumped
+                # whenever a derivation changes.
+                try:
+                    body = (cache_dir / "info").read_bytes()
+                    json.loads(body)
+                except (OSError, json.JSONDecodeError):
+                    # Unreachable in a complete entry: fingerprint.json is
+                    # written last, after info is fsynced. Degrade rather than
+                    # 500, per the missing/stale/corrupt-all-read-as-no-cache
+                    # ground rule.
+                    _logger.error(
+                        "%s: fingerprint is valid but cache info is unreadable or "
+                        "corrupt; falling back to single scale", relpath,
                     )
-                    if s.key in advertised
-                ]
-                chunk_size = tuple(fp["params"]["chunk_size"])
-                etag = f'"{fp["source_header_sha256"][:16]}"'
-            else:
+                    cache_hit = False
+                else:
+                    etag = f'"{fp["source_header_sha256"][:16]}-{fp["derivation_version"]}"'
+            if not cache_hit:
                 scales = plan_scales((hdr.nx, hdr.ny, hdr.nz), min_axis_size=32, max_levels=1)
-                chunk_size = settings.chunk_size
+                body = json.dumps(build_info(hdr, scales, chunk_size=settings.chunk_size)).encode()
                 etag = _source_etag(hdr)
-            info = build_info(hdr, scales, chunk_size=chunk_size)
     except MrcFormatError as e:
         return _header_error_response(e)
 
     _log_access(relpath, "info", "", cache_hit, start)
     return Response(
-        content=json.dumps(info),
+        content=body,
         media_type="application/json",
         headers={"Cache-Control": "no-cache, must-revalidate", "ETag": etag},
     )
@@ -262,22 +263,19 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
             if scale_key not in fp.get("scales", ()):
                 return Response(status_code=404)
 
-            # Recompute the scale plan from this build's own params (a pure
-            # calculation, no extra I/O -- min_axis_size/max_levels come from
-            # the fingerprint, not the server's current settings, since they
-            # don't invalidate the cache and an older build may have used
-            # different values). Validates the chunk spec against the grid
-            # before touching the filesystem, per sec 9.
-            scales = plan_scales(
-                (hdr.nx, hdr.ny, hdr.nz),
-                fp["params"]["min_axis_size"], fp["params"]["max_levels"],
-            )
-            scale = next((s for s in scales if s.key == scale_key), None)
-            if scale is None:
-                return Response(status_code=404)
+            # The level's size comes from the build that wrote these chunks, so
+            # validation cannot drift from them -- recomputing the scale plan
+            # here meant the server had to re-derive downsample_z and agree with
+            # the builder, or 404 levels that exist. Validates the chunk spec
+            # against the grid before touching the filesystem, per sec 9.
             try:
+                scale = ScaleLevel(
+                    key=scale_key,
+                    size=tuple(fp["scales"][scale_key]),
+                    factors=tuple(int(f) for f in scale_key.split("_")),
+                )
                 clip_chunk_to_scale(scale, x0, x1, y0, y1, z0, z1, chunk_size=settings.chunk_size)
-            except ValueError:
+            except (TypeError, ValueError):
                 return Response(status_code=404)
     except MrcFormatError as e:
         return _header_error_response(e)

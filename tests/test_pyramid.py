@@ -1,10 +1,12 @@
+import json
 import os
 import fcntl
 
 import numpy as np
 import pytest
 
-from mrcng.fingerprint import Params, read_fingerprint
+from mrcng.fingerprint import Params, Validity, read_fingerprint, validate
+from mrcng.mrcheader import parse_header
 from mrcng.paths import dataset_id, cache_dir_for
 from mrcng.pyramid import build_one, BuildStatus
 
@@ -200,3 +202,82 @@ def test_killed_build_leaves_no_fingerprint_and_is_rebuilt(source_and_cache, mon
     monkeypatch.setattr(pyramid_module, "write_fingerprint", original)
     result = build_one(source_root, cache_root, relpath, _params())
     assert result.status == BuildStatus.BUILT
+
+
+def test_image_stack_pyramid_never_bins_z(tmp_path, make_mrc_file):
+    """End-to-end: the built cache must keep every slice at every level.
+
+    Guards the wiring, not plan_scales (unit-tested separately): if the build
+    stopped passing downsample_z it would write 2_2_2 chunks holding the mean
+    of adjacent tilts, and the server -- which derives downsample_z from the
+    same header -- would then advertise 2_2_1 and never find them.
+    """
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+
+    # Classified a stack by glob, not by shape. Each slice is a distinct constant,
+    # so a z-averaged level would be immediately visible.
+    make_mrc_file(name="source/stack.mrc", shape=(256, 256, 8), mode=1,
+                  fill=lambda zz, yy, xx: (zz + 1) * 100)
+    result = build_one(source_root, cache_root, "stack.mrc",
+                       _params(chunk_size=(64, 64, 64), min_axis_size=32),
+                       stack_globs=("*stack.mrc",))
+    assert result.status == BuildStatus.BUILT
+
+    cache_dir = cache_dir_for(cache_root, dataset_id("stack.mrc"))
+    fp = read_fingerprint(cache_dir)
+    assert list(fp["scales"]) == ["2_2_1", "4_4_1"]
+
+    info = json.loads((cache_dir / "info").read_text())
+    assert info["is_image_stack"] is True
+    for scale in info["scales"]:
+        assert scale["size"][2] == 8, scale["key"]
+        assert scale["resolution"][2] == 1.0, scale["key"]
+
+    # Level 1 holds all 8 original slice values, unaveraged.
+    chunk = np.frombuffer((cache_dir / "2_2_1" / "0-64_0-64_0-8").read_bytes(),
+                          dtype="<i2").reshape(8, 64, 64)
+    assert [int(chunk[z, 0, 0]) for z in range(8)] == [(z + 1) * 100 for z in range(8)]
+
+
+def test_reclassifying_a_file_invalidates_its_cache(tmp_path, make_mrc_file):
+    """A glob change must not leave the old classification's artifacts in play.
+
+    The classification is an operator input, so nothing in the header or the
+    source bytes changes when it flips -- without the fingerprint recording it,
+    the entry would still read VALID and keep serving a z resolution and scale
+    plan built from the other answer. This is also what makes a server/builder
+    glob mismatch fail safe rather than silently.
+    """
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    make_mrc_file(name="source/s.mrc", shape=(256, 256, 8), mode=1,
+                  fill=lambda zz, yy, xx: (zz + 1) * 100)
+    params = _params(chunk_size=(64, 64, 64), min_axis_size=32)
+
+    built = build_one(source_root, cache_root, "s.mrc", params, stack_globs=("*s.mrc",))
+    assert built.status == BuildStatus.BUILT
+
+    cache_dir = cache_dir_for(cache_root, dataset_id("s.mrc"))
+    fp = read_fingerprint(cache_dir)
+    assert fp["is_image_stack"] is True
+
+    # Same file, same params, same everything except the operator's globs.
+    fd = os.open(str(source_root / "s.mrc"), os.O_RDONLY)
+    try:
+        st = os.stat(fd)
+        as_volume = parse_header(fd, st.st_size, st.st_mtime_ns, is_image_stack=False)
+        assert validate(fp, as_volume, fd, params) == Validity.INCOMPATIBLE
+        as_stack = parse_header(fd, st.st_size, st.st_mtime_ns, is_image_stack=True)
+        assert validate(fp, as_stack, fd, params) == Validity.VALID
+    finally:
+        os.close(fd)
+
+    # ...and a plain rebuild (no --force) picks the change up rather than skipping.
+    rebuilt = build_one(source_root, cache_root, "s.mrc", params, stack_globs=())
+    assert rebuilt.status == BuildStatus.BUILT
+    assert read_fingerprint(cache_dir)["is_image_stack"] is False

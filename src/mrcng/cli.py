@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from mrcng.fingerprint import Params, read_fingerprint, validate
-from mrcng.mrcheader import parse_header
+from mrcng.mrcheader import classify_path, parse_header
 from mrcng.paths import dataset_id, cache_dir_for
 from mrcng.pyramid import build_one, BuildStatus, DEFAULT_MAX_BLOCK_BYTES
 
@@ -44,6 +44,33 @@ def _add_source_root_arg(parser: argparse.ArgumentParser, *, flag: bool = False)
 def _add_cache_root_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cache-root", default=os.environ.get("MRCNG_CACHE_ROOT"),
                         help="cache tree root (default: $MRCNG_CACHE_ROOT)")
+
+
+def _env_globs(name: str) -> list[str]:
+    raw = os.environ.get(name, "")
+    return [g for g in (p.strip() for p in raw.split(",")) if g]
+
+
+def _add_classification_args(parser: argparse.ArgumentParser) -> None:
+    """Which files have a z axis that is a slice index, not a spatial axis.
+
+    Repeatable fnmatch patterns against the relpath. --volume-glob wins over
+    --stack-glob, because real trees mix the two in one directory. Whatever is
+    used here must also be set for the server (MRCNG_STACK_GLOBS /
+    MRCNG_VOLUME_GLOBS) or files with no valid cache get classified differently
+    there -- cached files are unaffected, they carry the answer in their
+    fingerprint.
+    """
+    parser.add_argument("--stack-glob", action="append",
+                        default=_env_globs("MRCNG_STACK_GLOBS"),
+                        help="treat matching files as image stacks: z is a slice "
+                             "index, 1nm per slice, never binned "
+                             "(default: $MRCNG_STACK_GLOBS, comma-separated)")
+    parser.add_argument("--volume-glob", action="append",
+                        default=_env_globs("MRCNG_VOLUME_GLOBS"),
+                        help="force matching files to be treated as 3D volumes, "
+                             "overriding --stack-glob "
+                             "(default: $MRCNG_VOLUME_GLOBS, comma-separated)")
 
 
 def _iter_mrc_files(source_root: Path, globs: list[str], walk_root: Path | None = None):
@@ -119,10 +146,12 @@ def _select_relpaths(
 
 def _build_one_record(task: tuple) -> dict:
     """Top-level (picklable) so multiprocessing.Pool can call it directly."""
-    source_root, cache_root, relpath, params, force, max_block_bytes, assume_mode0 = task
+    (source_root, cache_root, relpath, params, force, max_block_bytes, assume_mode0,
+     stack_globs, volume_globs) = task
     try:
         result = build_one(source_root, cache_root, relpath, params, force=force,
-                           max_block_bytes=max_block_bytes, assume_mode0=assume_mode0)
+                           max_block_bytes=max_block_bytes, assume_mode0=assume_mode0,
+                           stack_globs=stack_globs, volume_globs=volume_globs)
         return {
             "relpath": result.relpath, "dataset_id": result.dataset_id,
             "status": result.status.value, "source_bytes": result.source_bytes,
@@ -151,7 +180,8 @@ def _build_command(args) -> int:
     )
     relpaths = _select_relpaths(source_root, args.glob, args.from_file, walk_root)
     tasks = [
-        (source_root, cache_root, relpath, params, args.force, args.max_block_bytes, args.assume_mode0)
+        (source_root, cache_root, relpath, params, args.force, args.max_block_bytes,
+         args.assume_mode0, tuple(args.stack_glob or ()), tuple(args.volume_glob or ()))
         for relpath in relpaths
     ]
 
@@ -193,7 +223,9 @@ def _status_command(args) -> int:
         fd = os.open(str(source_root / relpath), os.O_RDONLY)
         try:
             st = os.stat(fd)
-            hdr = parse_header(fd, st.st_size, st.st_mtime_ns, assume_mode0=args.assume_mode0)
+            hdr = parse_header(fd, st.st_size, st.st_mtime_ns, assume_mode0=args.assume_mode0,
+                               is_image_stack=classify_path(relpath, args.stack_glob or (),
+                                                            args.volume_glob or ()))
             if hdr.mode0_signedness_is_ambiguous:
                 _logger.warning(
                     "%s: mode-0 signedness is ambiguous (no IMOD stamp), defaulting to "
@@ -241,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_source_root_arg(build_p, flag=True)
     _add_cache_root_arg(build_p)
     build_p.add_argument("--glob", action="append")
+    _add_classification_args(build_p)
     build_p.add_argument(
         "--from-file",
         help="file of newline-separated relpaths (relative to source_root) to "
@@ -274,6 +307,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_source_root_arg(status_p)
     _add_cache_root_arg(status_p)
     status_p.add_argument("--glob", action="append")
+    _add_classification_args(status_p)
     status_p.add_argument("--chunk-size", type=_parse_chunk_size, default=(64, 64, 64))
     status_p.add_argument("--min-axis-size", type=int, default=32)
     status_p.add_argument("--max-levels", type=int, default=6)

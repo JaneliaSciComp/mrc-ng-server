@@ -94,14 +94,14 @@ pixi run pyramid-prune --cache-root /path/to/cache --source-root /path/to/tomogr
 ## Running the server
 
 ```bash
-pixi run serve
+pixi run serve          # plain HTTP on 0.0.0.0:8000, for local use
+pixi run serve-remote   # HTTPS on 0.0.0.0:8001 with /opt/certs/{cert.crt,cert.key}
 ```
 
-Starts uvicorn on `0.0.0.0:8000` over HTTPS, using the shared cert at
-`/opt/certs/{cert.crt,cert.key}` — Neuroglancer runs in-browser and won't load
-a plain-HTTP data source from a page served over HTTPS (mixed content), so TLS
-here isn't optional. Reads `MRCNG_SOURCE_ROOT` / `MRCNG_CACHE_ROOT` (and the
-other `MRCNG_*` settings) from the environment.
+Use `serve-remote` when browsers will load the data source: Neuroglancer runs
+in-browser and won't load a plain-HTTP data source from a page served over
+HTTPS (mixed content). Both read `MRCNG_SOURCE_ROOT` / `MRCNG_CACHE_ROOT` (and
+the other `MRCNG_*` settings) from the environment.
 
 Check it's up:
 

@@ -34,7 +34,9 @@ from mrcng.downsample import block_mean
 from mrcng.fingerprint import (
     Params, build_fingerprint, write_fingerprint, read_fingerprint, validate, Validity,
 )
+from mrcng import omezarr
 from mrcng.mrcheader import classify_path, parse_header
+from mrcng.omezarr import FORMATS
 from mrcng.paths import resolve_source, dataset_id, cache_dir_for
 from mrcng.precomputed import plan_scales, build_info, chunk_name
 from mrcng.precomputed import encode_chunk
@@ -69,6 +71,7 @@ class BuildResult:
     levels_built: int = 0
     duration_s: float = 0.0
     voxel_size_is_default: bool = False
+    formats: tuple[str, ...] = ()
 
 
 def _chunk_grid(size, chunk_size):
@@ -84,15 +87,29 @@ def _chunk_grid(size, chunk_size):
                 yield x0, x1, y0, y1, z0, z1
 
 
-def _write_chunk(cache_dir: Path, scale_key: str, name: str, arr: np.ndarray) -> int:
-    scale_dir = cache_dir / scale_key
-    scale_dir.mkdir(parents=True, exist_ok=True)
-    body = encode_chunk(np.ascontiguousarray(arr))
-    (scale_dir / name).write_bytes(body)
-    return len(body)
+def _write_chunks(cache_dir: Path, formats, level: int, scale_key: str, chunk_size,
+                  x0: int, x1: int, y0: int, y1: int, z0: int, z1: int, arr: np.ndarray) -> int:
+    """Write one downsampled block to every selected layout. Downsampling
+    happened once, upstream; this is only the write."""
+    arr = np.ascontiguousarray(arr)
+    written = 0
+    if "precomputed" in formats:
+        scale_dir = cache_dir / "precomputed" / scale_key
+        scale_dir.mkdir(parents=True, exist_ok=True)
+        body = encode_chunk(arr)
+        (scale_dir / chunk_name(x0, x1, y0, y1, z0, z1)).write_bytes(body)
+        written += len(body)
+    if "omezarr" in formats:
+        cx, cy, cz = chunk_size
+        path = cache_dir / "omezarr" / omezarr.chunk_rel_path(level, z0 // cz, y0 // cy, x0 // cx)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = encode_chunk(np.ascontiguousarray(omezarr.pad_chunk(arr, (cz, cy, cx))))
+        path.write_bytes(body)
+        written += len(body)
+    return written
 
 
-def _build_level_from_source(fd, hdr, cache_dir: Path, level0, level1, chunk_size,
+def _build_level_from_source(fd, hdr, cache_dir: Path, level0, level1, chunk_size, formats,
                               max_block_bytes: int = DEFAULT_MAX_BLOCK_BYTES) -> int:
     """Stream level 1 out of the MRC one output chunk *row* at a time.
 
@@ -139,14 +156,28 @@ def _build_level_from_source(fd, hdr, cache_dir: Path, level0, level1, chunk_siz
 
                 for x0 in range(px0, px1, cx):
                     x1 = min(x0 + cx, sx)
-                    name = chunk_name(x0, x1, y0, y1, z0, z1)
-                    cache_bytes += _write_chunk(
-                        cache_dir, level1.key, name, band[:, :, x0 - px0:x1 - px0],
+                    cache_bytes += _write_chunks(
+                        cache_dir, formats, 1, level1.key, chunk_size,
+                        x0, x1, y0, y1, z0, z1, band[:, :, x0 - px0:x1 - px0],
                     )
     return cache_bytes
 
 
-def _read_prev_level_region(cache_dir: Path, scale, chunk_size, dtype,
+def _read_prev_chunk(cache_dir: Path, formats, level: int, scale, chunk_size, dtype,
+                     bx0: int, bx1: int, by0: int, by1: int, bz0: int, bz1: int) -> np.ndarray:
+    """One whole chunk of an already-built level as a (z, y, x) array of its
+    *clipped* extent. Prefers precomputed (already clipped); an omezarr-only
+    build reads the padded chunk and slices the padding off."""
+    shape = (bz1 - bz0, by1 - by0, bx1 - bx0)
+    if "precomputed" in formats:
+        raw = (cache_dir / "precomputed" / scale.key / chunk_name(bx0, bx1, by0, by1, bz0, bz1)).read_bytes()
+        return np.frombuffer(raw, dtype=dtype).reshape(shape)
+    cx, cy, cz = chunk_size
+    raw = (cache_dir / "omezarr" / omezarr.chunk_rel_path(level, bz0 // cz, by0 // cy, bx0 // cx)).read_bytes()
+    return np.frombuffer(raw, dtype=dtype).reshape(cz, cy, cx)[: shape[0], : shape[1], : shape[2]]
+
+
+def _read_prev_level_region(cache_dir: Path, formats, level: int, scale, chunk_size, dtype,
                              x0: int, x1: int, y0: int, y1: int, z0: int, z1: int) -> np.ndarray:
     """Assemble a (z1-z0, y1-y0, x1-x0) array from one or more of a previously
     built level's whole cache-chunk files (a source region spans at most 2
@@ -171,11 +202,8 @@ def _read_prev_level_region(cache_dir: Path, scale, chunk_size, dtype,
                 block_x0, block_x1 = (x // cx) * cx, min((x // cx) * cx + cx, sx)
                 take_x0, take_x1 = max(x, block_x0), min(x1, block_x1)
 
-                name = chunk_name(block_x0, block_x1, block_y0, block_y1, block_z0, block_z1)
-                raw = (cache_dir / scale.key / name).read_bytes()
-                block = np.frombuffer(raw, dtype=dtype).reshape(
-                    block_z1 - block_z0, block_y1 - block_y0, block_x1 - block_x0
-                )
+                block = _read_prev_chunk(cache_dir, formats, level, scale, chunk_size, dtype,
+                                         block_x0, block_x1, block_y0, block_y1, block_z0, block_z1)
                 out[
                     take_z0 - z0: take_z1 - z0,
                     take_y0 - y0: take_y1 - y0,
@@ -192,7 +220,8 @@ def _read_prev_level_region(cache_dir: Path, scale, chunk_size, dtype,
     return out
 
 
-def _build_level_from_previous(cache_dir: Path, prev_scale, next_scale, chunk_size, dtype) -> int:
+def _build_level_from_previous(cache_dir: Path, formats, level: int, prev_scale, next_scale,
+                               chunk_size, dtype) -> int:
     fx = next_scale.factors[0] // prev_scale.factors[0]
     fy = next_scale.factors[1] // prev_scale.factors[1]
     fz = next_scale.factors[2] // prev_scale.factors[2]
@@ -204,10 +233,12 @@ def _build_level_from_previous(cache_dir: Path, prev_scale, next_scale, chunk_si
         src_z0, src_z1 = z0 * fz, min(z1 * fz, prev_scale.size[2])
 
         block = _read_prev_level_region(
-            cache_dir, prev_scale, chunk_size, dtype, src_x0, src_x1, src_y0, src_y1, src_z0, src_z1,
+            cache_dir, formats, level - 1, prev_scale, chunk_size, dtype,
+            src_x0, src_x1, src_y0, src_y1, src_z0, src_z1,
         )
         downsampled = block_mean(block, (fz, fy, fx))
-        cache_bytes += _write_chunk(cache_dir, next_scale.key, chunk_name(x0, x1, y0, y1, z0, z1), downsampled)
+        cache_bytes += _write_chunks(cache_dir, formats, level, next_scale.key, chunk_size,
+                                     x0, x1, y0, y1, z0, z1, downsampled)
     return cache_bytes
 
 
@@ -244,7 +275,11 @@ def _open_source(source_root, relpath: str, assume_mode0: str | None = None,
 def build_one(source_root, cache_root, relpath: str, params: Params, force: bool = False,
               max_block_bytes: int = DEFAULT_MAX_BLOCK_BYTES,
               assume_mode0: str | None = None,
-              stack_globs=(), volume_globs=()) -> BuildResult:
+              stack_globs=(), volume_globs=(),
+              formats: tuple[str, ...] = FORMATS) -> BuildResult:
+    formats = tuple(formats)
+    if not formats or set(formats) - set(FORMATS):
+        raise ValueError(f"formats must be a non-empty subset of {FORMATS}, got {formats!r}")
     source_root, cache_root = Path(source_root), Path(cache_root)
     start = time.monotonic()
     ds_id = dataset_id(relpath)
@@ -259,9 +294,14 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
         params = replace(params, dtype=hdr.served_dtype.name)
 
         existing = read_fingerprint(cache_dir)
-        if existing is not None and not force and validate(existing, hdr, fd, params) == Validity.VALID:
+        if (existing is not None and not force
+                and validate(existing, hdr, fd, params) == Validity.VALID
+                # Formats are replaced, never merged: the entry must hold
+                # exactly what this run asks for or it is rebuilt from scratch.
+                and set(existing.get("formats", ())) == set(formats)):
             return BuildResult(relpath, ds_id, BuildStatus.SKIPPED_VALID, source_bytes=hdr.file_size,
-                               voxel_size_is_default=hdr.voxel_size_is_default)
+                               voxel_size_is_default=hdr.voxel_size_is_default,
+                               formats=tuple(existing["formats"]))
 
         cache_dir.mkdir(parents=True, exist_ok=True)
         lock_fd = os.open(str(cache_dir / ".lock"), os.O_CREAT | os.O_RDWR)
@@ -276,11 +316,13 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
             if fp_path.exists():
                 fp_path.unlink()
 
-            # Drop every existing scale dir before rebuilding. A previous build
-            # of a differently-shaped source leaves chunk files whose names are
-            # not in the new grid; they survive an overwrite and stay readable
-            # under the *new* valid fingerprint. Only the level dirs go -- the
-            # flock we are holding lives on cache_dir/.lock.
+            # Drop every existing layout (precomputed/, omezarr/) before
+            # rebuilding. A previous build of a differently-shaped source leaves
+            # chunk files whose names are not in the new grid; they survive an
+            # overwrite and stay readable under the *new* valid fingerprint. And
+            # a rebuild with fewer formats must leave nothing the fingerprint
+            # does not list. Only the subdirs go -- the flock we are holding
+            # lives on cache_dir/.lock.
             for child in cache_dir.iterdir():
                 if child.is_dir():
                     shutil.rmtree(child)
@@ -292,17 +334,28 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
 
             if len(scales) > 1:
                 cache_bytes += _build_level_from_source(
-                    fd, hdr, cache_dir, scales[0], scales[1], params.chunk_size, max_block_bytes,
+                    fd, hdr, cache_dir, scales[0], scales[1], params.chunk_size, formats, max_block_bytes,
                 )
                 levels_built += 1
                 for i in range(2, len(scales)):
                     cache_bytes += _build_level_from_previous(
-                        cache_dir, scales[i - 1], scales[i], params.chunk_size, hdr.served_dtype,
+                        cache_dir, formats, i, scales[i - 1], scales[i], params.chunk_size, hdr.served_dtype,
                     )
                     levels_built += 1
 
-            info = build_info(hdr, scales, params.chunk_size, params.encoding)
-            (cache_dir / "info").write_text(json.dumps(info))
+            if "precomputed" in formats:
+                (cache_dir / "precomputed").mkdir(exist_ok=True)
+                info = build_info(hdr, scales, params.chunk_size, params.encoding)
+                (cache_dir / "precomputed" / "info").write_text(json.dumps(info))
+            if "omezarr" in formats:
+                zroot = cache_dir / "omezarr"
+                zroot.mkdir(exist_ok=True)
+                (zroot / "zarr.json").write_text(json.dumps(
+                    omezarr.build_group_json(hdr, scales, name=relpath.rsplit("/", 1)[-1])))
+                for i, lvl in enumerate(scales):  # level 0 too: metadata only, no chunks
+                    (zroot / str(i)).mkdir(exist_ok=True)
+                    (zroot / str(i) / "zarr.json").write_text(json.dumps(
+                        omezarr.build_array_json(lvl.size, params.chunk_size, hdr.served_dtype)))
 
             _fsync_tree(cache_dir)
 
@@ -311,6 +364,7 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
                 scales={s.key: s.size for s in scales[1:]},
                 generator_version=GENERATOR_VERSION,
                 build_duration_s=time.monotonic() - start,
+                formats=formats,
             )
             write_fingerprint(cache_dir, fp)
 
@@ -319,6 +373,7 @@ def build_one(source_root, cache_root, relpath: str, params: Params, force: bool
                 source_bytes=hdr.file_size, cache_bytes=cache_bytes,
                 levels_built=levels_built, duration_s=time.monotonic() - start,
                 voxel_size_is_default=hdr.voxel_size_is_default,
+                formats=formats,
             )
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)

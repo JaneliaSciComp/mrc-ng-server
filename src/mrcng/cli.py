@@ -157,7 +157,8 @@ def _build_one_record(task: tuple) -> dict:
             "status": result.status.value, "source_bytes": result.source_bytes,
             "cache_bytes": result.cache_bytes, "levels_built": result.levels_built,
             "duration_s": result.duration_s,
-            "voxel_size_is_default": result.voxel_size_is_default, "error": None,
+            "voxel_size_is_default": result.voxel_size_is_default,
+            "formats": list(result.formats), "error": None,
         }
     except Exception as e:
         return {"relpath": relpath, "status": "failed", "error": str(e)}

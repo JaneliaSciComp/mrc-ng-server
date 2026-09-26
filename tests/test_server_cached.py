@@ -49,7 +49,7 @@ def test_cached_chunk_byte_identical_to_disk(cached_setup):
 
     from mrcng.paths import dataset_id, cache_dir_for
     cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
-    on_disk = (cache_dir / "2_2_2" / "0-8_0-8_0-8").read_bytes()
+    on_disk = (cache_dir / "precomputed" / "2_2_2" / "0-8_0-8_0-8").read_bytes()
     assert resp.content == on_disk
 
 
@@ -125,7 +125,7 @@ def test_rebuild_over_a_replaced_source_leaves_no_readable_orphan_scale(cached_s
     from tests.conftest import make_mrc
 
     cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
-    assert (cache_dir / "4_4_4").is_dir()  # built from the 32^3 source
+    assert (cache_dir / "precomputed" / "4_4_4").is_dir()  # built from the 32^3 source
 
     time.sleep(0.01)
     os.remove(source_root / relpath)
@@ -135,7 +135,7 @@ def test_rebuild_over_a_replaced_source_leaves_no_readable_orphan_scale(cached_s
                     max_levels=3, dtype="int16", encoding="raw")
     build_one(source_root, cache_root, relpath, params)
 
-    assert not (cache_dir / "4_4_4").exists()  # removed by the rebuild
+    assert not (cache_dir / "precomputed" / "4_4_4").exists()  # removed by the rebuild
     keys = [s["key"] for s in client.get(f"/data/{relpath}/info").json()["scales"]]
     assert keys == ["1_1_1", "2_2_2"]
     assert client.get(f"/data/{relpath}/4_4_4/0-8_0-8_0-8").status_code == 404
@@ -254,7 +254,7 @@ def test_valid_cache_serves_the_built_info_bytes(cached_setup):
     from mrcng.paths import dataset_id, cache_dir_for
     cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
 
-    info_path = cache_dir / "info"
+    info_path = cache_dir / "precomputed" / "info"
     mutated = json.loads(info_path.read_text())
     mutated["_sdd_sentinel"] = "served-from-disk"
     mutated_bytes = json.dumps(mutated).encode()
@@ -310,7 +310,7 @@ def test_valid_fingerprint_with_unreadable_info_falls_back(cached_setup):
     client, _, cache_root, relpath = cached_setup
     from mrcng.paths import dataset_id, cache_dir_for
     cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
-    (cache_dir / "info").unlink()
+    (cache_dir / "precomputed" / "info").unlink()
 
     resp = client.get(f"/data/{relpath}/info")
     assert resp.status_code == 200
@@ -356,7 +356,7 @@ def test_cached_chunk_404s_when_scale_key_absent_from_fingerprint(cached_setup):
     del fp["scales"][removed]
     fp_path.write_text(json.dumps(fp))
 
-    assert (cache_dir / removed).is_dir(), "level must still exist on disk"
+    assert (cache_dir / "precomputed" / removed).is_dir(), "level must still exist on disk"
     resp = client.get(f"/data/{relpath}/{removed}/0-8_0-8_0-8")
     assert resp.status_code == 404
 
@@ -370,7 +370,7 @@ def test_corrupt_cached_info_falls_back_to_single_scale(cached_setup):
     from mrcng.paths import dataset_id, cache_dir_for
 
     cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
-    (cache_dir / "info").write_bytes(b"{not valid json")
+    (cache_dir / "precomputed" / "info").write_bytes(b"{not valid json")
 
     resp = client.get(f"/data/{relpath}/info")
     assert resp.status_code == 200

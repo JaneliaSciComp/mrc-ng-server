@@ -164,7 +164,7 @@ async def _serve_info(settings, fd_cache: FdCache, relpath: str) -> Response:
                 # forever (46e8a88) -- which means that constant MUST be bumped
                 # whenever a derivation changes.
                 try:
-                    body = (cache_dir / "info").read_bytes()
+                    body = (cache_dir / "precomputed" / "info").read_bytes()
                     json.loads(body)
                 except (OSError, json.JSONDecodeError):
                     # Unreachable in a complete entry: fingerprint.json is
@@ -280,7 +280,7 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
     except MrcFormatError as e:
         return _header_error_response(e)
 
-    chunk_path = cache_dir / scale_key / chunk_str
+    chunk_path = cache_dir / "precomputed" / scale_key / chunk_str
     if not chunk_path.is_file():
         return Response(status_code=404)
 

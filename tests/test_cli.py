@@ -302,3 +302,17 @@ def test_status_prints_formats_and_incomplete(tmp_path, make_mrc_file, capsys):
 
     main(["status", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
     assert "a.mrc: incomplete [precomputed]" in capsys.readouterr().out
+
+
+def test_bad_env_formats_is_a_usage_error_and_does_not_break_prune(tmp_path, make_mrc_file, monkeypatch):
+    # Regression: the env default was parsed while *building* the parser, so a
+    # typo in MRCNG_FORMATS raised an uncaught ArgumentTypeError from every
+    # subcommand -- including prune, which has no --formats at all.
+    monkeypatch.setenv("MRCNG_FORMATS", "zar")
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"; cache_root.mkdir()
+
+    assert main(["prune", "--cache-root", str(cache_root), "--source-root", str(source_root)]) == 0
+    with pytest.raises(SystemExit):  # argparse usage error, not a traceback
+        main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root)])

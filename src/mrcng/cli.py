@@ -47,8 +47,11 @@ def _parse_formats(s: str) -> tuple[str, ...]:
 
 
 def _add_formats_arg(parser: argparse.ArgumentParser) -> None:
+    # A *string* default is run through `type` at parse time, so a typo in
+    # MRCNG_FORMATS is a normal usage error for build/status only -- parsing it
+    # here, while the parser is built, made it a traceback from every subcommand.
     parser.add_argument("--formats", type=_parse_formats,
-                        default=_parse_formats(os.environ.get("MRCNG_FORMATS") or ",".join(FORMATS)),
+                        default=os.environ.get("MRCNG_FORMATS") or ",".join(FORMATS),
                         help="comma-separated layouts to build/check: precomputed,omezarr "
                              "(default: $MRCNG_FORMATS, else both)")
 

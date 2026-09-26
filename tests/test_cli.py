@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 
 import pytest
@@ -316,3 +317,33 @@ def test_bad_env_formats_is_a_usage_error_and_does_not_break_prune(tmp_path, mak
     assert main(["prune", "--cache-root", str(cache_root), "--source-root", str(source_root)]) == 0
     with pytest.raises(SystemExit):  # argparse usage error, not a traceback
         main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root)])
+
+
+def test_build_refuses_a_source_root_that_is_not_a_directory(tmp_path, capsys):
+    # Regression: a typo'd MRCNG_SOURCE_ROOT globbed nothing and exited 0 in
+    # silence, indistinguishable from a build that is quietly working.
+    with pytest.raises(SystemExit) as exc:
+        main(["build", "--source-root", str(tmp_path / "nope"), "--cache-root", str(tmp_path / "c")])
+    assert exc.value.code != 0
+    assert "nope" in capsys.readouterr().err
+
+
+def test_build_with_no_matching_files_says_so_and_fails(tmp_path, caplog):
+    source_root = tmp_path / "source"; source_root.mkdir()
+    (source_root / "readme.txt").write_text("no tomograms here")
+    with caplog.at_level(logging.ERROR, logger="mrcng.pyramid"):
+        rc = main(["build", "--source-root", str(source_root), "--cache-root", str(tmp_path / "c")])
+    assert rc == 1
+    assert "no files" in caplog.text and "*.mrc" in caplog.text
+
+
+def test_build_logs_startup_and_per_file_progress(tmp_path, make_mrc_file, caplog):
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    make_mrc_file(name="source/b.mrc", shape=(16, 16, 16), mode=1)
+    with caplog.at_level(logging.INFO, logger="mrcng.pyramid"):
+        rc = main(["build", "--source-root", str(source_root), "--cache-root", str(tmp_path / "c"),
+                   "--chunk-size", "8,8,8", "--jobs", "1"])
+    assert rc == 0
+    assert "2 files" in caplog.text and str(source_root) in caplog.text
+    assert "building a.mrc" in caplog.text and "building b.mrc" in caplog.text

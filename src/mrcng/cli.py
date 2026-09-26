@@ -169,7 +169,11 @@ def _select_relpaths(
 def _build_one_record(task: tuple) -> dict:
     """Top-level (picklable) so multiprocessing.Pool can call it directly."""
     (source_root, cache_root, relpath, params, force, max_block_bytes, assume_mode0,
-     stack_globs, volume_globs, formats) = task
+     stack_globs, volume_globs, formats, log_level) = task
+    # Workers are forkserver children on Linux since 3.14, so the parent's
+    # logging config is not inherited. basicConfig is a no-op when it is.
+    logging.basicConfig(level=log_level)
+    _logger.info("building %s", relpath)
     try:
         result = build_one(source_root, cache_root, relpath, params, force=force,
                            max_block_bytes=max_block_bytes, assume_mode0=assume_mode0,
@@ -202,10 +206,19 @@ def _build_command(args) -> int:
         encoding="raw",
     )
     relpaths = _select_relpaths(source_root, args.glob, args.from_file, walk_root)
+    if not relpaths:
+        # Exiting 0 in silence here is indistinguishable from a build that is
+        # quietly working -- a typo'd root or glob cost an afternoon that way.
+        _logger.error("no files matched %s under %s (from-file: %s)",
+                      args.glob or ["*.mrc"], walk_root, args.from_file)
+        return 1
+    jobs = min(args.jobs, len(relpaths)) if args.jobs > 1 else 1
+    _logger.info("%d files under %s, %d worker(s), formats %s; one JSON line per file follows",
+                 len(relpaths), walk_root, jobs, ",".join(args.formats))
     tasks = [
         (source_root, cache_root, relpath, params, args.force, args.max_block_bytes,
          args.assume_mode0, tuple(args.stack_glob or ()), tuple(args.volume_glob or ()),
-         tuple(args.formats))
+         tuple(args.formats), args.log_level)
         for relpath in relpaths
     ]
 
@@ -213,13 +226,16 @@ def _build_command(args) -> int:
     # Within a file the work is I/O-bound streaming; across files it
     # parallelises cleanly (sec 8). Oversubscribing NFS with more workers than
     # files or than requested helps nothing.
-    if args.jobs <= 1 or len(tasks) <= 1:
+    if jobs <= 1:
         for record in map(_build_one_record, tasks):
             records.append(record)
             print(json.dumps(record))
     else:
-        with multiprocessing.Pool(min(args.jobs, len(tasks))) as pool:
-            for record in pool.imap(_build_one_record, tasks):
+        # Unordered: a record prints the moment its file finishes. Ordered imap
+        # held every line back until the alphabetically-first (often largest)
+        # file completed, which read as "nothing is happening".
+        with multiprocessing.Pool(jobs) as pool:
+            for record in pool.imap_unordered(_build_one_record, tasks):
                 records.append(record)
                 print(json.dumps(record))
 
@@ -355,6 +371,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("source_root is required (arg or $MRCNG_SOURCE_ROOT)")
     if args.cache_root is None:
         parser.error("--cache-root is required (arg or $MRCNG_CACHE_ROOT)")
+    if not Path(args.source_root).is_dir():
+        parser.error(f"source_root is not a directory: {args.source_root!r}")
     return args.func(args)
 
 

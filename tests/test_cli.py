@@ -1,7 +1,10 @@
 import json
 import os
 
+import pytest
+
 from mrcng.cli import main
+from mrcng.fingerprint import read_fingerprint
 
 
 def test_build_writes_report_jsonl(tmp_path, make_mrc_file):
@@ -251,3 +254,51 @@ def test_status_warns_on_ambiguous_mode0_signedness(tmp_path, make_mrc_file, cap
         main(["status", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
 
     assert any("ambiguous" in r.message for r in caplog.records if r.name == "mrcng.pyramid")
+
+
+def test_build_formats_option_selects_layouts(tmp_path, make_mrc_file):
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"
+
+    rc = main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
+               "--chunk-size", "8,8,8", "--formats", "omezarr"])
+    assert rc == 0
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id("a.mrc"))
+    assert (cache_dir / "omezarr" / "zarr.json").is_file()
+    assert not (cache_dir / "precomputed").exists()
+    assert read_fingerprint(cache_dir)["formats"] == ["omezarr"]
+
+
+def test_build_formats_default_comes_from_env(tmp_path, make_mrc_file, monkeypatch):
+    monkeypatch.setenv("MRCNG_FORMATS", "precomputed")
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"
+    assert main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
+                 "--chunk-size", "8,8,8"]) == 0
+    from mrcng.paths import dataset_id, cache_dir_for
+    assert read_fingerprint(cache_dir_for(cache_root, dataset_id("a.mrc")))["formats"] == ["precomputed"]
+
+
+@pytest.mark.parametrize("bad", ["", "zarr2", "precomputed,,omezarr", "precomputed,n5"])
+def test_build_rejects_unknown_or_empty_formats(tmp_path, bad):
+    with pytest.raises(SystemExit):
+        main(["build", "--source-root", str(tmp_path), "--cache-root", str(tmp_path / "c"),
+              "--formats", bad])
+
+
+def test_status_prints_formats_and_incomplete(tmp_path, make_mrc_file, capsys):
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"
+    main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
+          "--chunk-size", "8,8,8", "--formats", "precomputed"])
+
+    main(["status", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8",
+          "--formats", "precomputed"])
+    assert "a.mrc: valid [precomputed]" in capsys.readouterr().out
+
+    main(["status", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
+    assert "a.mrc: incomplete [precomputed]" in capsys.readouterr().out

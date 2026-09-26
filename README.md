@@ -135,16 +135,18 @@ before you have a number to compare against.
 
 1. Start the server (above) and note its base URL, e.g. `https://your-host:8000`.
 2. For a file at `<MRCNG_SOURCE_ROOT>/some/relative/path.mrc`, the
-   Neuroglancer data source URL is:
+   Neuroglancer data source URL is one of:
 
    ```
-   precomputed://https://your-host:8000/data/some/relative/path.mrc
+   precomputed://https://your-host:8000/precomputed/some/relative/path.mrc
+   zarr3://https://your-host:8000/omezarr/some/relative/path.mrc
    ```
 
-   (no `/info` suffix — Neuroglancer appends that itself).
+   (no `/info` or `/zarr.json` suffix — Neuroglancer appends those itself).
+   `/data/` is a legacy alias for `/precomputed/` and keeps working for saved
+   links.
 3. Open a Neuroglancer instance (e.g. https://neuroglancer-demo.appspot.com/,
-   or a self-hosted build) and add a new layer with source type
-   **precomputed**, pasting the URL above.
+   or a self-hosted build) and add a new layer, pasting one of the URLs above.
 4. What to expect:
    - **No cache built yet**: a single-resolution image layer. Correct at
      full zoom, but there's nothing to zoom out to smoothly — Neuroglancer
@@ -190,6 +192,52 @@ Two consequences worth knowing:
 Voxel data is never hashed — that would mean reading the entire corpus on every
 validation — so `valid` means "the header is unchanged", not "no byte of the
 file changed".
+
+### Output formats
+
+The server speaks two protocols from the same cache entry:
+
+- **precomputed** at `/precomputed/<relpath>` (alias `/data/`): Neuroglancer's
+  native format, clipped edge chunks.
+- **OME-Zarr 0.5** (Zarr v3) at `/omezarr/<relpath>`: `zarr.json` group and
+  array metadata, raw little-endian chunks at `<level>/c/<z>/<y>/<x>`, edge
+  chunks zero-padded to the chunk shape. Downsampled levels carry a
+  `translation` of `(f-1)/2` source voxels per axis, the OME-NGFF pixel-centre
+  convention.
+
+Level 0 is read from the MRC on request in both formats and is never on disk,
+so `omezarr/` is a serving cache, not a standalone OME-Zarr store: opened
+directly with a Zarr library, level 0 reads as zeros.
+
+Which layouts a build writes is `--formats` (default `precomputed,omezarr`;
+environment default `MRCNG_FORMATS`):
+
+```bash
+pixi run build-cache --source-root ... --cache-root ... --formats omezarr
+```
+
+Formats are replaced, not merged: an entry is only skipped as valid when it
+holds exactly the requested set, otherwise it is rebuilt with exactly that set.
+`mrc-pyramid status` prints the formats beside the validity and says
+`incomplete` when a valid entry lacks one you asked for. A request for a format
+the build did not write serves single-resolution on that endpoint.
+
+Cache entry layout:
+
+```
+<cache_root>/<xx>/<dataset_id>/
+  fingerprint.json
+  precomputed/info
+  precomputed/<scale_key>/<x0-x1_y0-y1_z0-z1>
+  omezarr/zarr.json
+  omezarr/<level>/zarr.json          # level 0 has metadata but no chunks
+  omezarr/<level>/c/<kz>/<ky>/<kx>
+```
+
+**Caches built before this landed must be rebuilt.** The fingerprint schema
+changed (v4) and the precomputed layout moved under `precomputed/`; old entries
+read as `incompatible` and a plain `mrc-pyramid build` rebuilds them. Build into
+a fresh `--cache-root` and swap to avoid the single-resolution window.
 
 ### Image stacks (tilt series, gain references)
 
@@ -245,10 +293,11 @@ directly:
 https://your-host:8000/browse
 ```
 
-Click through subdirectories; every `.mrc`/`.rec` file gets an "Open in
-Neuroglancer" link that opens `https://neuroglancer-demo.appspot.com` with an
-`"auto"`-type layer already pointing at that file — the same URL you'd build
-by hand per the section above, generated for you.
+Click through subdirectories; every `.mrc`/`.rec` file gets two links,
+"Neuroglancer (precomputed)" and "Neuroglancer (OME-Zarr)", each opening
+`https://neuroglancer-demo.appspot.com` with an `"auto"`-type layer already
+pointing at that file on the matching endpoint — the same URLs you'd build by
+hand per the section above, generated for you.
 
 This is deliberately minimal: no search, filtering, or cache-status
 indicators (use `pixi run pyramid-status` for that), no JavaScript, and it
@@ -263,7 +312,7 @@ production deployments a reverse proxy in front of uvicorn can offload
 static chunk serving and add CDN-friendly caching:
 
 ```nginx
-location /data/ {
+location ~ ^/(data|precomputed|omezarr)/ {
     proxy_pass http://127.0.0.1:8000;
     proxy_set_header Host $host;
 

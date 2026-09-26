@@ -417,3 +417,34 @@ def test_image_stack_omezarr_keeps_every_slice(tmp_path, make_mrc_file):
     chunk = _read_zarr_chunk(cache_dir, 1, 0, 0, 0, (64, 64, 64))
     assert [int(chunk[z, 0, 0]) for z in range(8)] == [(z + 1) * 100 for z in range(8)]
     assert chunk[8:].sum() == 0  # padded z
+
+
+def test_omezarr_layout_opens_with_the_zarr_library(source_and_cache):
+    """The one check that our hand-written zarr.json files are what a real
+    Zarr v3 implementation expects. Level 0 has no chunks on disk by design,
+    so it reads back as fill_value -- asserted here so nobody mistakes the
+    cache for a standalone store."""
+    import zarr
+    from mrcng.downsample import block_mean
+    import mrcfile
+
+    source_root, cache_root, relpath = source_and_cache
+    build_one(source_root, cache_root, relpath, _params())
+    cache_dir = cache_dir_for(cache_root, dataset_id(relpath))
+
+    group = zarr.open_group(str(cache_dir / "omezarr"), mode="r", zarr_format=3)
+    ome = group.attrs["ome"]
+    assert ome["version"] == "0.5"
+    assert [d["path"] for d in ome["multiscales"][0]["datasets"]] == ["0", "1", "2"]
+
+    with mrcfile.open(source_root / relpath, permissive=True) as mf:
+        level0 = np.asarray(mf.data)
+    level1 = group["1"]
+    assert level1.shape == (16, 16, 16) and level1.dtype == np.dtype("int16")
+    assert level1.chunks == (8, 8, 8)
+    np.testing.assert_array_equal(level1[:], block_mean(level0, (2, 2, 2)))
+    level2 = group["2"]
+    np.testing.assert_array_equal(level2[:], block_mean(block_mean(level0, (2, 2, 2)), (2, 2, 2)))
+
+    assert group["0"].shape == (32, 32, 32)
+    assert group["0"][:].sum() == 0   # serving cache, not a standalone store

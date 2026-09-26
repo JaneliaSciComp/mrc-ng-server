@@ -27,6 +27,7 @@ mrc_ng_server = { path = ".", editable = true }
 pytest = "*"
 mrcfile = "*"
 httpx = "*"
+zarr = ">=3"
 
 [tool.pixi.environments]
 default = { features = ["test"], solve-group = "default" }

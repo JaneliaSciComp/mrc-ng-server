@@ -29,7 +29,7 @@ def test_write_then_read_roundtrip(tmp_path, make_mrc_file):
     try:
         fp = build_fingerprint(
             fd, hdr, relpath="tomo.mrc", params=_params(),
-            scales={"2_2_2": (4, 4, 4)}, generator_version="mrc-pyramid 0.1.0",
+            scales={"2_2_2": (4, 4, 4)}, generator_version="mrc-pyramid 0.1.0", formats=("precomputed", "omezarr"),
             build_duration_s=1.23,
         )
         cache_dir = tmp_path / "cache_entry"
@@ -61,7 +61,7 @@ def test_validate_valid_when_everything_matches(tmp_path, make_mrc_file):
     path = make_mrc_file(shape=(8, 8, 8), mode=1)
     fd, hdr = _open(path)
     try:
-        fp = build_fingerprint(fd, hdr, "tomo.mrc", _params(), {"2_2_2": (4, 4, 4)}, "v0.1.0", 1.0)
+        fp = build_fingerprint(fd, hdr, "tomo.mrc", _params(), {"2_2_2": (4, 4, 4)}, "v0.1.0", 1.0, formats=("precomputed",))
         assert validate(fp, hdr, fd, _params()) == Validity.VALID
     finally:
         os.close(fd)
@@ -71,7 +71,7 @@ def test_validate_stale_when_source_mtime_changes(tmp_path, make_mrc_file):
     path = make_mrc_file(shape=(8, 8, 8), mode=1)
     fd, hdr = _open(path)
     try:
-        fp = build_fingerprint(fd, hdr, "tomo.mrc", _params(), {"2_2_2": (4, 4, 4)}, "v0.1.0", 1.0)
+        fp = build_fingerprint(fd, hdr, "tomo.mrc", _params(), {"2_2_2": (4, 4, 4)}, "v0.1.0", 1.0, formats=("precomputed",))
     finally:
         os.close(fd)
 
@@ -91,7 +91,7 @@ def test_validate_incompatible_when_chunk_size_differs(tmp_path, make_mrc_file):
     path = make_mrc_file(shape=(8, 8, 8), mode=1)
     fd, hdr = _open(path)
     try:
-        fp = build_fingerprint(fd, hdr, "tomo.mrc", _params(), {"2_2_2": (4, 4, 4)}, "v0.1.0", 1.0)
+        fp = build_fingerprint(fd, hdr, "tomo.mrc", _params(), {"2_2_2": (4, 4, 4)}, "v0.1.0", 1.0, formats=("precomputed",))
         different_params = _params(chunk_size=(32, 32, 32))
         assert validate(fp, hdr, fd, different_params) == Validity.INCOMPATIBLE
     finally:
@@ -102,7 +102,7 @@ def test_validate_incompatible_when_schema_version_unknown(tmp_path, make_mrc_fi
     path = make_mrc_file(shape=(8, 8, 8), mode=1)
     fd, hdr = _open(path)
     try:
-        fp = build_fingerprint(fd, hdr, "tomo.mrc", _params(), {"2_2_2": (4, 4, 4)}, "v0.1.0", 1.0)
+        fp = build_fingerprint(fd, hdr, "tomo.mrc", _params(), {"2_2_2": (4, 4, 4)}, "v0.1.0", 1.0, formats=("precomputed",))
         fp["schema_version"] = 999
         assert validate(fp, hdr, fd, _params()) == Validity.INCOMPATIBLE
     finally:
@@ -113,7 +113,7 @@ def test_generator_version_change_alone_stays_valid(tmp_path, make_mrc_file):
     path = make_mrc_file(shape=(8, 8, 8), mode=1)
     fd, hdr = _open(path)
     try:
-        fp = build_fingerprint(fd, hdr, "tomo.mrc", _params(), {"2_2_2": (4, 4, 4)}, "v0.1.0", 1.0)
+        fp = build_fingerprint(fd, hdr, "tomo.mrc", _params(), {"2_2_2": (4, 4, 4)}, "v0.1.0", 1.0, formats=("precomputed",))
         fp["generator_version"] = "mrc-pyramid 9.9.9"
         assert validate(fp, hdr, fd, _params()) == Validity.VALID
     finally:
@@ -135,7 +135,7 @@ def test_validate_reports_outdated_when_derivation_changed(make_mrc_file):
         params = Params(chunk_size=(8, 8, 8), downsample="mean", min_axis_size=8,
                         max_levels=3, dtype="int16", encoding="raw")
         fp = build_fingerprint(fd, hdr, "t.mrc", params, scales={},
-                               generator_version="test", build_duration_s=0.0)
+                               generator_version="test", build_duration_s=0.0, formats=("precomputed",))
         assert validate(fp, hdr, fd, params) == Validity.VALID
 
         fp["derivation_version"] = 999
@@ -158,11 +158,41 @@ def test_build_fingerprint_records_scale_sizes(make_mrc_file):
                         max_levels=3, dtype="int16", encoding="raw")
         fp = build_fingerprint(fd, hdr, "t.mrc", params,
                                scales={"2_2_2": (4, 4, 4)},
-                               generator_version="test", build_duration_s=0.0)
+                               generator_version="test", build_duration_s=0.0, formats=("precomputed",))
     finally:
         os.close(fd)
-    assert fp["schema_version"] == 3
+    assert fp["schema_version"] == 4
     assert fp["scales"] == {"2_2_2": [4, 4, 4]}
     # iterating the mapping still yields keys, which app.py relies on
     assert list(fp["scales"]) == ["2_2_2"]
     assert "2_2_2" in fp["scales"]
+
+
+def test_fingerprint_records_formats_and_schema_3_is_incompatible(make_mrc_file):
+    import os
+    from mrcng.fingerprint import (
+        Params, Validity, build_fingerprint, validate, SCHEMA_VERSION, DERIVATION_VERSION,
+    )
+    from mrcng.mrcheader import parse_header
+
+    assert SCHEMA_VERSION == 4 and DERIVATION_VERSION == 2
+
+    path = make_mrc_file(shape=(8, 8, 8), mode=1)
+    fd = os.open(str(path), os.O_RDONLY)
+    try:
+        st = os.stat(fd)
+        hdr = parse_header(fd, st.st_size, st.st_mtime_ns)
+        params = Params(chunk_size=(8, 8, 8), downsample="mean", min_axis_size=8,
+                        max_levels=3, dtype="int16", encoding="raw")
+        fp = build_fingerprint(fd, hdr, "t.mrc", params, scales={}, generator_version="test",
+                               build_duration_s=0.0, formats=("omezarr",))
+        assert fp["formats"] == ["omezarr"]
+        assert validate(fp, hdr, fd, params) == Validity.VALID
+
+        # A fingerprint written by the previous layout (no formats key, schema 3)
+        # must never validate: its chunks sit at the entry root, not under precomputed/.
+        fp["schema_version"] = 3
+        del fp["formats"]
+        assert validate(fp, hdr, fd, params) == Validity.INCOMPATIBLE
+    finally:
+        os.close(fd)

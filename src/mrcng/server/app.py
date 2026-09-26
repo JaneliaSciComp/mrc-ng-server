@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from importlib.metadata import version
 from pathlib import Path
 
+import numpy as np
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -330,6 +331,12 @@ async def _serve_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore
         return Response(status_code=404)
 
     _log_access(relpath, scale_key, chunk_str, True, start)
+    return _cached_file_response(settings, chunk_path)
+
+
+def _cached_file_response(settings, chunk_path: Path) -> Response:
+    """A built chunk file, in either layout. Immutable: the URL bakes in the
+    level and index and the fingerprint guards the content."""
     if settings.serve_cache_via_sendfile:
         return FileResponse(
             chunk_path,
@@ -403,5 +410,69 @@ async def _serve_zarr_metadata(settings, fd_cache: FdCache, relpath: str, level:
     )
 
 
-async def _serve_zarr_chunk(settings, fd_cache, semaphore, relpath, level, kz, ky, kx) -> Response:
-    return Response(status_code=404)  # replaced in the chunk task
+async def _serve_zarr_chunk(settings, fd_cache: FdCache, semaphore: asyncio.Semaphore,
+                            relpath: str, level: int, kz: int, ky: int, kx: int) -> Response:
+    start = time.monotonic()
+    try:
+        path = resolve_source(settings.source_root, relpath)
+    except PathNotAllowed:
+        return Response(status_code=404)
+
+    cx, cy, cz = settings.chunk_size
+    chunk_label = f"{kz}/{ky}/{kx}"
+    try:
+        with fd_cache.open(path) as handle:
+            fd, hdr = handle.fd, handle.hdr
+            if level == 0:
+                try:
+                    x0, x1, y0, y1, z0, z1 = omezarr.chunk_region(
+                        (hdr.nx, hdr.ny, hdr.nz), settings.chunk_size, kz, ky, kx)
+                except ValueError:
+                    return Response(status_code=404)
+
+                threshold = settings.read_row_bytes_threshold
+                async with semaphore:
+                    try:
+                        arr = await asyncio.to_thread(
+                            read_chunk, fd, hdr, x0, x1, y0, y1, z0, z1, threshold,
+                        )
+                    except ChunkOutOfBounds:
+                        return Response(status_code=404)
+                    except UnexpectedEOF as e:
+                        _logger.error(
+                            "unexpected EOF reading %s omezarr/0/%s: %s", relpath, chunk_label, e,
+                        )
+                        return Response(status_code=500)
+
+                # Zarr chunks are always chunk_shape-sized; precomputed clips instead.
+                body = encode_chunk(np.ascontiguousarray(omezarr.pad_chunk(arr, (cz, cy, cx))))
+                _log_access(relpath, "0", chunk_label, False, start)
+                return Response(
+                    content=body,
+                    media_type="application/octet-stream",
+                    headers={
+                        # Same reasoning as the precomputed scale-0 path: the source
+                        # is mutable at this relpath, so revalidate every time.
+                        "Cache-Control": "no-cache, must-revalidate",
+                        "ETag": _source_etag(hdr),
+                        "X-Mrcng-Read-Strategy": choose_strategy(
+                            x0, x1, hdr.dtype.itemsize, threshold).value,
+                    },
+                )
+
+            cache_dir = _cache_dir_for(settings, relpath)
+            fp = _valid_fp(handle, cache_dir, _current_params(settings, hdr), "omezarr")
+            if fp is None or level > len(fp["scales"]):
+                return Response(status_code=404)
+    except MrcFormatError as e:
+        return _header_error_response(e)
+
+    # No grid check against the fingerprint here, unlike precomputed: the key
+    # is four integers, so there is nothing path-unsafe to validate, and an
+    # index outside the grid is simply not a file.
+    chunk_path = cache_dir / "omezarr" / omezarr.chunk_rel_path(level, kz, ky, kx)
+    if not chunk_path.is_file():
+        return Response(status_code=404)
+
+    _log_access(relpath, str(level), chunk_label, True, start)
+    return _cached_file_response(settings, chunk_path)

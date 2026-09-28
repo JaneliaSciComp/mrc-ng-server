@@ -1,7 +1,11 @@
 import json
+import logging
 import os
 
+import pytest
+
 from mrcng.cli import main
+from mrcng.fingerprint import read_fingerprint
 
 
 def test_build_writes_report_jsonl(tmp_path, make_mrc_file):
@@ -251,3 +255,95 @@ def test_status_warns_on_ambiguous_mode0_signedness(tmp_path, make_mrc_file, cap
         main(["status", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
 
     assert any("ambiguous" in r.message for r in caplog.records if r.name == "mrcng.pyramid")
+
+
+def test_build_formats_option_selects_layouts(tmp_path, make_mrc_file):
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"
+
+    rc = main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
+               "--chunk-size", "8,8,8", "--formats", "omezarr"])
+    assert rc == 0
+    from mrcng.paths import dataset_id, cache_dir_for
+    cache_dir = cache_dir_for(cache_root, dataset_id("a.mrc"))
+    assert (cache_dir / "omezarr" / "zarr.json").is_file()
+    assert not (cache_dir / "precomputed").exists()
+    assert read_fingerprint(cache_dir)["formats"] == ["omezarr"]
+
+
+def test_build_formats_default_comes_from_env(tmp_path, make_mrc_file, monkeypatch):
+    monkeypatch.setenv("MRCNG_FORMATS", "precomputed")
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"
+    assert main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
+                 "--chunk-size", "8,8,8"]) == 0
+    from mrcng.paths import dataset_id, cache_dir_for
+    assert read_fingerprint(cache_dir_for(cache_root, dataset_id("a.mrc")))["formats"] == ["precomputed"]
+
+
+@pytest.mark.parametrize("bad", ["", "zarr2", "precomputed,,omezarr", "precomputed,n5"])
+def test_build_rejects_unknown_or_empty_formats(tmp_path, bad):
+    with pytest.raises(SystemExit):
+        main(["build", "--source-root", str(tmp_path), "--cache-root", str(tmp_path / "c"),
+              "--formats", bad])
+
+
+def test_status_prints_formats_and_incomplete(tmp_path, make_mrc_file, capsys):
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"
+    main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root),
+          "--chunk-size", "8,8,8", "--formats", "precomputed"])
+
+    main(["status", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8",
+          "--formats", "precomputed"])
+    assert "a.mrc: valid [precomputed]" in capsys.readouterr().out
+
+    main(["status", str(source_root), "--cache-root", str(cache_root), "--chunk-size", "8,8,8"])
+    assert "a.mrc: incomplete [precomputed]" in capsys.readouterr().out
+
+
+def test_bad_env_formats_is_a_usage_error_and_does_not_break_prune(tmp_path, make_mrc_file, monkeypatch):
+    # Regression: the env default was parsed while *building* the parser, so a
+    # typo in MRCNG_FORMATS raised an uncaught ArgumentTypeError from every
+    # subcommand -- including prune, which has no --formats at all.
+    monkeypatch.setenv("MRCNG_FORMATS", "zar")
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    cache_root = tmp_path / "cache"; cache_root.mkdir()
+
+    assert main(["prune", "--cache-root", str(cache_root), "--source-root", str(source_root)]) == 0
+    with pytest.raises(SystemExit):  # argparse usage error, not a traceback
+        main(["build", "--source-root", str(source_root), "--cache-root", str(cache_root)])
+
+
+def test_build_refuses_a_source_root_that_is_not_a_directory(tmp_path, capsys):
+    # Regression: a typo'd MRCNG_SOURCE_ROOT globbed nothing and exited 0 in
+    # silence, indistinguishable from a build that is quietly working.
+    with pytest.raises(SystemExit) as exc:
+        main(["build", "--source-root", str(tmp_path / "nope"), "--cache-root", str(tmp_path / "c")])
+    assert exc.value.code != 0
+    assert "nope" in capsys.readouterr().err
+
+
+def test_build_with_no_matching_files_says_so_and_fails(tmp_path, caplog):
+    source_root = tmp_path / "source"; source_root.mkdir()
+    (source_root / "readme.txt").write_text("no tomograms here")
+    with caplog.at_level(logging.ERROR, logger="mrcng.pyramid"):
+        rc = main(["build", "--source-root", str(source_root), "--cache-root", str(tmp_path / "c")])
+    assert rc == 1
+    assert "no files" in caplog.text and "*.mrc" in caplog.text
+
+
+def test_build_logs_startup_and_per_file_progress(tmp_path, make_mrc_file, caplog):
+    source_root = tmp_path / "source"; source_root.mkdir()
+    make_mrc_file(name="source/a.mrc", shape=(16, 16, 16), mode=1)
+    make_mrc_file(name="source/b.mrc", shape=(16, 16, 16), mode=1)
+    with caplog.at_level(logging.INFO, logger="mrcng.pyramid"):
+        rc = main(["build", "--source-root", str(source_root), "--cache-root", str(tmp_path / "c"),
+                   "--chunk-size", "8,8,8", "--jobs", "1"])
+    assert rc == 0
+    assert "2 files" in caplog.text and str(source_root) in caplog.text
+    assert "building a.mrc" in caplog.text and "building b.mrc" in caplog.text

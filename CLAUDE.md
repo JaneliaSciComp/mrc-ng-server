@@ -10,9 +10,9 @@ valid, indefinitely, with no warning from `mrc-pyramid status` and no failing
 test.
 
 The test: **can your change alter the values in `info` or the bytes in a chunk
-file?** Today that means `mrcheader.py`, `precomputed.py`, `downsample.py`,
-`pyramid.py` and `reader.py` — but apply the question, not the list, if you add a
-module. Bump if you changed any of:
+file?** Today that means `mrcheader.py`, `precomputed.py`, `omezarr.py`,
+`downsample.py`, `pyramid.py` and `reader.py` — but apply the question, not the
+list, if you add a module. Bump if you changed any of:
 
 - the voxel size, `data_type`, or anything else that appears in `info`
 - the scale plan (which levels exist, their sizes or factors)
@@ -31,6 +31,12 @@ metadata cost weeks last time.
 
 ## Other traps
 
+- Two layouts, one entry. `precomputed/` clips edge chunks; `omezarr/` pads them
+  to `chunk_shape` with zeros. Interior chunks are byte-identical. The level-
+  from-level cascade reads whichever layout the build selected, and slices the
+  padding off when it is `omezarr/` — forgetting that averages zeros into edge
+  voxels at level 2+. `fingerprint["formats"]` says which layouts exist; a
+  format not listed is served as no cache.
 - `hdr.dtype` is the on-disk dtype; `hdr.served_dtype` is the on-the-wire
   dtype. They differ only for MRC mode 12 (float16 widens to float32 because
   Neuroglancer can't render float16). Every byte offset/itemsize calculation

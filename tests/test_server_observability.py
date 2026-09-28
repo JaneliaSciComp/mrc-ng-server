@@ -96,5 +96,5 @@ def test_x_accel_redirect_used_when_sendfile_disabled(tmp_path, make_mrc_file):
     assert resp.content == b""  # nginx replaces the body; Python sends none
 
     cache_dir = cache_dir_for(cache_root, dataset_id("tomo.mrc"))
-    rel = (cache_dir / "2_2_2" / "0-8_0-8_0-8").relative_to(cache_root).as_posix()
+    rel = (cache_dir / "precomputed" / "2_2_2" / "0-8_0-8_0-8").relative_to(cache_root).as_posix()
     assert resp.headers["x-accel-redirect"] == f"/__cache__/{rel}"

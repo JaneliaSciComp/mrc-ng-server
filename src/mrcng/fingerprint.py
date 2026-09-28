@@ -44,7 +44,7 @@ from mrcng.reader import pread_exact
 #
 # "generator_version" is a third field, recorded for forensics and deliberately
 # never compared: a release bump must not invalidate a whole corpus by itself.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4  # v3 -> v4: added "formats"
 
 _ADDRESSING_FIELDS = ("chunk_size", "encoding", "dtype")
 
@@ -53,7 +53,8 @@ _ADDRESSING_FIELDS = ("chunk_size", "encoding", "dtype")
 #
 # It tracks the modules that decide what a build writes -- today mrcheader.py
 # (voxel size, data_type, is_image_stack, byte offsets), precomputed.py
-# (plan_scales, build_info, encode_chunk), downsample.py (the voxel arithmetic for
+# (plan_scales, build_info, encode_chunk), omezarr.py (build_group_json,
+# build_array_json, pad_chunk, chunk_rel_path), downsample.py (the voxel arithmetic for
 # every level >= 1), pyramid.py (which levels get written, the level-from-level
 # cascade, downsample_z) and reader.py (the source voxels that get downsampled).
 # Treat that as a consequence of the rule, not the rule itself: if you add a
@@ -72,7 +73,7 @@ _ADDRESSING_FIELDS = ("chunk_size", "encoding", "dtype")
 # is how a zero-cella-z tilt stack once served "resolution": [.., .., 0.0] for
 # weeks after the fix landed (46e8a88). When unsure, bump: a needless rebuild
 # costs batch I/O, a missed one costs correctness nobody notices.
-DERIVATION_VERSION = 1
+DERIVATION_VERSION = 2  # v1 -> v2: layouts moved under precomputed/ and omezarr/
 
 
 @dataclass(frozen=True)
@@ -99,11 +100,16 @@ def compute_header_sha256(fd: int, data_offset: int) -> str:
 
 def build_fingerprint(fd: int, hdr, relpath: str, params: Params,
                        scales: dict[str, tuple[int, int, int]],
-                       generator_version: str, build_duration_s: float) -> dict:
+                       generator_version: str, build_duration_s: float,
+                       *, formats: tuple[str, ...]) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,
         "generator_version": generator_version,
         "derivation_version": DERIVATION_VERSION,
+        # Exactly the layouts this build wrote (precomputed/, omezarr/). A
+        # request for a format not listed here serves single-resolution, the
+        # same as no cache. Not in Params: it is *what* was built, not *how*.
+        "formats": list(formats),
         # The classification this build used. Recorded because it is an *input*
         # (operator globs), not something re-derivable from the header: without it
         # a glob change would leave every reclassified entry reading as VALID with

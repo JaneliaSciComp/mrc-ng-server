@@ -21,10 +21,15 @@ NEUROGLANCER_BASE_URL = "https://neuroglancer-demo.appspot.com/#!"
 _MRC_SUFFIXES = (".mrc", ".rec")
 
 
-def build_neuroglancer_link(scheme: str, netloc: str, relpath: str) -> str:
-    """relpath is POSIX-style, relative to MRCNG_SOURCE_ROOT."""
+def build_neuroglancer_link(scheme: str, netloc: str, relpath: str, fmt: str = "precomputed") -> str:
+    """relpath is POSIX-style, relative to MRCNG_SOURCE_ROOT. fmt selects the
+    endpoint: precomputed:// over /precomputed/, or zarr3:// over /omezarr/
+    (zarr3 rather than zarr so Neuroglancer does not probe for v2 metadata)."""
     name = relpath.rsplit("/", 1)[-1]
-    source = f"precomputed://{scheme}://{netloc}/data/{relpath}"
+    if fmt == "omezarr":
+        source = f"zarr3://{scheme}://{netloc}/omezarr/{relpath}"
+    else:
+        source = f"precomputed://{scheme}://{netloc}/precomputed/{relpath}"
     state = {"layers": [{"type": "auto", "source": source, "name": name}]}
     encoded = quote(json.dumps(state, separators=(",", ":")), safe="")
     return f"{NEUROGLANCER_BASE_URL}{encoded}"
@@ -81,10 +86,12 @@ def _render_listing(settings, request: Request, relpath: str) -> HTMLResponse:
         parts.append("<ul>")
         for f in files:
             file_relpath = f"{base_relpath}/{f.name}" if base_relpath else f.name
-            link = build_neuroglancer_link(request.url.scheme, request.url.netloc, file_relpath)
+            pre = build_neuroglancer_link(request.url.scheme, request.url.netloc, file_relpath)
+            zarr = build_neuroglancer_link(request.url.scheme, request.url.netloc, file_relpath, fmt="omezarr")
             parts.append(
                 f'<li>{html.escape(f.name)} '
-                f'&mdash; <a href="{html.escape(link)}" target="_blank">Open in Neuroglancer</a></li>'
+                f'&mdash; <a href="{html.escape(pre)}" target="_blank">Neuroglancer (precomputed)</a> '
+                f'&middot; <a href="{html.escape(zarr)}" target="_blank">Neuroglancer (OME-Zarr)</a></li>'
             )
         parts.append("</ul>")
     else:

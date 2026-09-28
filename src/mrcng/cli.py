@@ -10,8 +10,9 @@ import shutil
 import sys
 from pathlib import Path
 
-from mrcng.fingerprint import Params, read_fingerprint, validate
+from mrcng.fingerprint import Params, Validity, read_fingerprint, validate
 from mrcng.mrcheader import classify_path, parse_header
+from mrcng.omezarr import FORMATS
 from mrcng.paths import dataset_id, cache_dir_for
 from mrcng.pyramid import build_one, BuildStatus, DEFAULT_MAX_BLOCK_BYTES
 
@@ -32,6 +33,27 @@ def _parse_size(s: str) -> int:
     if s and s[-1] in units:
         return int(float(s[:-1]) * units[s[-1]])
     return int(s)
+
+
+def _parse_formats(s: str) -> tuple[str, ...]:
+    """precomputed,omezarr -> ("precomputed", "omezarr"). One option, not a
+    repeatable one, so passing it once *replaces* the default instead of
+    appending to it."""
+    parts = tuple(p.strip() for p in s.split(","))
+    if not parts or any(p not in FORMATS for p in parts):
+        raise argparse.ArgumentTypeError(
+            f"formats must be a comma-separated subset of {','.join(FORMATS)}, got {s!r}")
+    return parts
+
+
+def _add_formats_arg(parser: argparse.ArgumentParser) -> None:
+    # A *string* default is run through `type` at parse time, so a typo in
+    # MRCNG_FORMATS is a normal usage error for build/status only -- parsing it
+    # here, while the parser is built, made it a traceback from every subcommand.
+    parser.add_argument("--formats", type=_parse_formats,
+                        default=os.environ.get("MRCNG_FORMATS") or ",".join(FORMATS),
+                        help="comma-separated layouts to build/check: precomputed,omezarr "
+                             "(default: $MRCNG_FORMATS, else both)")
 
 
 def _add_source_root_arg(parser: argparse.ArgumentParser, *, flag: bool = False) -> None:
@@ -147,17 +169,22 @@ def _select_relpaths(
 def _build_one_record(task: tuple) -> dict:
     """Top-level (picklable) so multiprocessing.Pool can call it directly."""
     (source_root, cache_root, relpath, params, force, max_block_bytes, assume_mode0,
-     stack_globs, volume_globs) = task
+     stack_globs, volume_globs, formats, log_level) = task
+    # Workers are forkserver children on Linux since 3.14, so the parent's
+    # logging config is not inherited. basicConfig is a no-op when it is.
+    logging.basicConfig(level=log_level)
+    _logger.info("building %s", relpath)
     try:
         result = build_one(source_root, cache_root, relpath, params, force=force,
                            max_block_bytes=max_block_bytes, assume_mode0=assume_mode0,
-                           stack_globs=stack_globs, volume_globs=volume_globs)
+                           stack_globs=stack_globs, volume_globs=volume_globs, formats=formats)
         return {
             "relpath": result.relpath, "dataset_id": result.dataset_id,
             "status": result.status.value, "source_bytes": result.source_bytes,
             "cache_bytes": result.cache_bytes, "levels_built": result.levels_built,
             "duration_s": result.duration_s,
-            "voxel_size_is_default": result.voxel_size_is_default, "error": None,
+            "voxel_size_is_default": result.voxel_size_is_default,
+            "formats": list(result.formats), "error": None,
         }
     except Exception as e:
         return {"relpath": relpath, "status": "failed", "error": str(e)}
@@ -179,9 +206,19 @@ def _build_command(args) -> int:
         encoding="raw",
     )
     relpaths = _select_relpaths(source_root, args.glob, args.from_file, walk_root)
+    if not relpaths:
+        # Exiting 0 in silence here is indistinguishable from a build that is
+        # quietly working -- a typo'd root or glob cost an afternoon that way.
+        _logger.error("no files matched %s under %s (from-file: %s)",
+                      args.glob or ["*.mrc"], walk_root, args.from_file)
+        return 1
+    jobs = min(args.jobs, len(relpaths)) if args.jobs > 1 else 1
+    _logger.info("%d files under %s, %d worker(s), formats %s; one JSON line per file follows",
+                 len(relpaths), walk_root, jobs, ",".join(args.formats))
     tasks = [
         (source_root, cache_root, relpath, params, args.force, args.max_block_bytes,
-         args.assume_mode0, tuple(args.stack_glob or ()), tuple(args.volume_glob or ()))
+         args.assume_mode0, tuple(args.stack_glob or ()), tuple(args.volume_glob or ()),
+         tuple(args.formats), args.log_level)
         for relpath in relpaths
     ]
 
@@ -189,13 +226,16 @@ def _build_command(args) -> int:
     # Within a file the work is I/O-bound streaming; across files it
     # parallelises cleanly (sec 8). Oversubscribing NFS with more workers than
     # files or than requested helps nothing.
-    if args.jobs <= 1 or len(tasks) <= 1:
+    if jobs <= 1:
         for record in map(_build_one_record, tasks):
             records.append(record)
             print(json.dumps(record))
     else:
-        with multiprocessing.Pool(min(args.jobs, len(tasks))) as pool:
-            for record in pool.imap(_build_one_record, tasks):
+        # Unordered: a record prints the moment its file finishes. Ordered imap
+        # held every line back until the alphabetically-first (often largest)
+        # file completed, which read as "nothing is happening".
+        with multiprocessing.Pool(jobs) as pool:
+            for record in pool.imap_unordered(_build_one_record, tasks):
                 records.append(record)
                 print(json.dumps(record))
 
@@ -242,7 +282,11 @@ def _status_command(args) -> int:
             result = validate(fp, hdr, fd, params)
         finally:
             os.close(fd)
-        print(f"{relpath}: {result.value}")
+        built = tuple(fp.get("formats", ()))
+        status = result.value
+        if result == Validity.VALID and not set(args.formats) <= set(built):
+            status = "incomplete"  # valid, but a plain build would still rebuild it
+        print(f"{relpath}: {status} [{','.join(built)}]")
 
     return 0
 
@@ -274,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_cache_root_arg(build_p)
     build_p.add_argument("--glob", action="append")
     _add_classification_args(build_p)
+    _add_formats_arg(build_p)
     build_p.add_argument(
         "--from-file",
         help="file of newline-separated relpaths (relative to source_root) to "
@@ -308,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_cache_root_arg(status_p)
     status_p.add_argument("--glob", action="append")
     _add_classification_args(status_p)
+    _add_formats_arg(status_p)
     status_p.add_argument("--chunk-size", type=_parse_chunk_size, default=(64, 64, 64))
     status_p.add_argument("--min-axis-size", type=int, default=32)
     status_p.add_argument("--max-levels", type=int, default=6)
@@ -325,6 +371,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("source_root is required (arg or $MRCNG_SOURCE_ROOT)")
     if args.cache_root is None:
         parser.error("--cache-root is required (arg or $MRCNG_CACHE_ROOT)")
+    if not Path(args.source_root).is_dir():
+        parser.error(f"source_root is not a directory: {args.source_root!r}")
     return args.func(args)
 
 

@@ -18,7 +18,7 @@ def test_build_neuroglancer_link_contains_auto_layer_and_source():
     state = json.loads(unquote(encoded))
     layer = state["layers"][0]
     assert layer["type"] == "auto"
-    assert layer["source"] == "precomputed://https://example.org:8443/data/sub/tomo.mrc"
+    assert layer["source"] == "precomputed://https://example.org:8443/precomputed/sub/tomo.mrc"
     assert layer["name"] == "tomo.mrc"
 
 
@@ -27,7 +27,7 @@ def test_build_neuroglancer_link_name_is_the_basename_at_root():
     encoded = link[len(NEUROGLANCER_BASE_URL):]
     state = json.loads(unquote(encoded))
     assert state["layers"][0]["name"] == "top.mrc"
-    assert state["layers"][0]["source"] == "precomputed://http://localhost:8000/data/top.mrc"
+    assert state["layers"][0]["source"] == "precomputed://http://localhost:8000/precomputed/top.mrc"
 
 
 @pytest.fixture
@@ -51,7 +51,7 @@ def test_root_listing_shows_subdirs_and_mrc_files(browse_client):
     assert resp.status_code == 200
     assert "sub/" in resp.text
     assert "top.mrc" in resp.text
-    assert "Open in Neuroglancer" in resp.text
+    assert "Neuroglancer (precomputed)" in resp.text
 
 
 def test_subdirectory_listing_shows_rec_file_and_parent_link(browse_client):
@@ -82,7 +82,7 @@ def test_neuroglancer_link_uses_the_requests_own_host(browse_client):
     encoded = link.split("#!", 1)[1]
     state = json.loads(unquote(encoded))
     assert state["layers"][0]["type"] == "auto"
-    assert state["layers"][0]["source"] == "precomputed://http://testserver/data/top.mrc"
+    assert state["layers"][0]["source"] == "precomputed://http://testserver/precomputed/top.mrc"
 
 
 def test_empty_directory_renders_without_erroring(tmp_path):
@@ -97,3 +97,19 @@ def test_empty_directory_renders_without_erroring(tmp_path):
     assert resp.status_code == 200
     assert "no subdirectories" in resp.text
     assert "no .mrc/.rec files" in resp.text
+
+
+def test_build_neuroglancer_link_omezarr_uses_zarr3_scheme():
+    link = build_neuroglancer_link("https", "example.org:8443", "sub/tomo.mrc", fmt="omezarr")
+    state = json.loads(unquote(link[len(NEUROGLANCER_BASE_URL):]))
+    assert state["layers"][0]["source"] == "zarr3://https://example.org:8443/omezarr/sub/tomo.mrc"
+    assert state["layers"][0]["name"] == "tomo.mrc"
+
+
+def test_listing_offers_both_formats_per_file(browse_client):
+    resp = browse_client.get("/browse")
+    assert resp.status_code == 200
+    assert "Neuroglancer (precomputed)" in resp.text
+    assert "Neuroglancer (OME-Zarr)" in resp.text
+    assert "precomputed%3A%2F%2F" in resp.text and "zarr3%3A%2F%2F" in resp.text
+    assert "/data/" not in unquote(resp.text)
